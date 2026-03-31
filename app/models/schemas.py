@@ -5,6 +5,19 @@ from typing import List, Optional
 
 # --- External API Mock Models ---
 
+class DiagnosisInfo(BaseModel):
+    icd10_code: str
+    description: str
+
+class PatientInfo(BaseModel):
+    id: UUID
+    full_name: str
+
+class DoctorInfo(BaseModel):
+    id: UUID
+    role: str
+    full_name: str
+
 class MedicalRecord(BaseModel):
     id: UUID
     patient_id: UUID
@@ -14,6 +27,9 @@ class MedicalRecord(BaseModel):
     diagnosis_date_encoded: int
     attending_doctor_id: UUID
     notes_encrypted: Optional[str] = None
+    diagnosis: DiagnosisInfo
+    patient: PatientInfo
+    attending_doctor: DoctorInfo
     created_at: datetime
 
 class UserKeys(BaseModel):

@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     # API URLs
     IDENTITY_API_URL: str
     MEDICAL_API_URL: str
+    MEDICAL_API_TOKEN: Optional[str] = None
     
     # Supabase
     SUPABASE_URL: str

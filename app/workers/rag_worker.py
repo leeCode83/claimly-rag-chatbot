@@ -39,23 +39,12 @@ async def process_medical_rag(ctx, encrypted_payload: str):
     print(f"Worker processing RAG for session {session_id}")
 
     try:
-        # 2. Fetch Medical Records (Mock)
-        records = await api_mock.get_medical_records(user_id)
-        
-        # 3. Perform RAG Pipeline
-        context_parts = []
-        for record in records:
-            # Here we would normally decrypt using KEK
-            plaintext_notes = "Pasien memiliki riwayat alergi parasetamol dan asma."
-            context_parts.append(f"Diagnosis: {record.diagnosis_id}\nNotes: {plaintext_notes}")
-        
-        context = "\n---\n".join(context_parts)
-
-        # 4. Stream RAG Answer via AI Service
-        async for chunk in ai_service.stream_rag_answer(prompt, context):
+        # 3. Execute Two-Phase RAG Pipeline
+        # This handles Fetch -> Rank -> Decrypt -> Embed -> Final RAG
+        async for chunk in ai_service.process_selective_rag(user_id, prompt, session_id, correlation_id):
             await redis_service.publish_chunk(session_id, correlation_id, chunk)
         
-        # 5. Finalize
+        # 4. Finalize
         await redis_service.publish_chunk(session_id, correlation_id, "", is_final=True)
         print(f"RAG Task complete for session {session_id}")
 
