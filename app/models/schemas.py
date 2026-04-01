@@ -42,6 +42,7 @@ class UserKeys(BaseModel):
 class ChatRequest(BaseModel):
     prompt: str
     password: str
+    accessToken: str
 
 class ChatChunk(BaseModel):
     """Payload for streaming chunks over WebSocket."""
@@ -58,3 +59,4 @@ class TaskPayload(BaseModel):
     user_id: str
     prompt: str
     kek: str  # Encrypted using APP_SECRET in KMSService before enqueue
+    accessToken: str

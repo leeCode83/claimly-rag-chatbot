@@ -1,42 +1,43 @@
 from typing import List
-import httpx
+import logging
 from app.models.schemas import MedicalRecord
 from app.utils.mocks import api_mock
 from app.services.ai_service import ai_service
 from app.core.config import settings
+from app.core.http import get_http_client
 from google.genai import types
 import json
 
+logger = logging.getLogger("uvicorn.error")
+
 class MedicalRecordService:
-    async def fetch_patient_records(self, user_id: str) -> List[MedicalRecord]:
+    async def fetch_patient_records(self, user_id: str, access_token: str) -> List[MedicalRecord]:
         """
-        Fetch patient records from Medical API.
-        Falls back to Mock if token is missing or request fails.
+        Fetch patient records from Medical API using user's bearer token.
         """
-        # Gunakan Mock jika token belum diset di .env
-        if not settings.MEDICAL_API_TOKEN or settings.MEDICAL_API_TOKEN == "your_bearer_token_here":
-            print("MEDICAL_API_TOKEN not set, falling back to Mock Data.")
+        if not access_token:
+            logger.warning("Access token missing, falling back to Mock.")
             return await api_mock.get_medical_records(user_id)
 
         try:
-            async with httpx.AsyncClient() as client:
-                headers = {"Authorization": f"Bearer {settings.MEDICAL_API_TOKEN}"}
-                response = await client.get(
-                    settings.MEDICAL_API_URL, 
-                    headers=headers,
-                    timeout=10.0
-                )
-                
-                if response.status_code == 200:
-                    data = response.json()
-                    # Parse 'data' array from the response
-                    records_raw = data.get("data", [])
-                    return [MedicalRecord(**r) for r in records_raw]
-                else:
-                    print(f"API Error {response.status_code}: {response.text}")
-                    return await api_mock.get_medical_records(user_id)
+            client = get_http_client()
+            headers = {"Authorization": f"Bearer {access_token}"}
+            response = await client.get(
+                settings.MEDICAL_API_URL, 
+                headers=headers,
+                timeout=10.0
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                # Parse 'data' array from the response
+                records_raw = data.get("data", [])
+                return [MedicalRecord(**r) for r in records_raw]
+            else:
+                logger.error(f"Medical API Error {response.status_code}: {response.text}")
+                return await api_mock.get_medical_records(user_id)
         except Exception as e:
-            print(f"Connection failed: {str(e)}. Falling back to Mock.")
+            logger.error(f"Connection to Medical API failed: {str(e)}. Falling back to Mock.")
             return await api_mock.get_medical_records(user_id)
 
     async def rank_relevant_records(self, prompt: str, records: List[MedicalRecord], limit: int = 5) -> List[MedicalRecord]:
@@ -71,7 +72,8 @@ class MedicalRecordService:
 
         try:
             # Menggunakan Gemini untuk memilih ID
-            async with ai_service.client.aio as async_client:
+            client = ai_service.get_client()
+            async with client.aio as async_client:
                 response = await async_client.models.generate_content(
                     model=ai_service.model_name,
                     contents=selector_prompt,
@@ -79,14 +81,14 @@ class MedicalRecordService:
                         response_mime_type="application/json"
                     )
                 )
-                
-                # Parse output JSON
-                relevant_ids = json.loads(response.text)
-                if not isinstance(relevant_ids, list):
-                    relevant_ids = [relevant_ids]
-                
-                # Filter records based on selected IDs
-                return [r for r in records if str(r.id) in relevant_ids][:limit]
+            
+            # Parse output JSON
+            relevant_ids = json.loads(response.text)
+            if not isinstance(relevant_ids, list):
+                relevant_ids = [relevant_ids]
+            
+            # Filter records based on selected IDs
+            return [r for r in records if str(r.id) in relevant_ids][:limit]
         except Exception as e:
             print(f"Error in ranking records: {e}")
             # Fallback: Kembalikan beberapa yang terbaru jika LLM gagal

@@ -10,11 +10,14 @@ class Settings(BaseSettings):
     # API URLs
     IDENTITY_API_URL: str
     MEDICAL_API_URL: str
-    MEDICAL_API_TOKEN: Optional[str] = None
     
-    # Supabase
+    # Supabase (Vector Store - Cloud)
     SUPABASE_URL: str
     SUPABASE_KEY: str
+    
+    # Supabase (Auth - Local)
+    SUPABASE_AUTH_URL: Optional[str] = None
+    SUPABASE_AUTH_KEY: Optional[str] = None
     
     # Redis
     REDIS_URL: str = "redis://localhost:6379"

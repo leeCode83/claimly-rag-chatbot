@@ -1,16 +1,16 @@
 # Claimly RAG Chatbot: Secure On-Demand Medical Assistant
 
-**Claimly RAG Chatbot** is a privacy-first, zero-persistence backend service designed to handle sensitive medical records. It leverages **FastAPI**, **Redis (RAM-only)**, and **Google Gemini 2.5/3.0** to provide real-time, RAG-enabled medical insights via secure WebSockets.
+**Claimly RAG Chatbot** adalah backend service berbasis AI yang mengutamakan privasi (*privacy-first*) dan *zero-persistence* untuk menangani rekam medis sensitif. Menggunakan **FastAPI**, **Redis (RAM-only)**, dan **Google Gemini 2.5/3.0**, sistem ini memberikan wawasan medis secara real-time melalui WebSockets yang aman.
 
 ---
 
-## 🛡️ Privacy & Security Features
-- **Zero-Persistence Architecture**: Configured with a RAM-only Redis (RDB/AOF disabled) to ensure session data never touches the disk.
-- **KMS Hybrid Engine**: 
-    - Uses **Argon2id** (KDF) for high-entropy Key Encryption Key (KEK) derivation.
-    - Uses **AES-256-GCM** for end-to-end task payload encryption.
-- **Proactive Cleanup**: Session keys and sensitive decrypted records are immediately purged from RAM upon WebSocket disconnection.
-- **Sticky Vectors**: Embeddings are temporarily stored and validated against user consent, ensuring data isolation.
+## 🛡️ Fitur Privasi & Keamanan
+- **Arsitektur Zero-Persistence**: Menggunakan Redis RAM-only (RDB/AOF dinonaktifkan) untuk memastikan data sesi tidak pernah menyentuh hard disk.
+- **Hybrid KMS Engine**: 
+    - **Argon2id** (KDF) untuk derivasi *Key Encryption Key* (KEK) dengan entropi tinggi.
+    - **AES-256-GCM** untuk enkripsi payload tugas *end-to-end*.
+- **Pembersihan Proaktif**: Kunci sesi dan rekam medis yang didekripsi segera dihapus dari RAM setelah WebSocket terputus.
+- **Optimasi Batch Embedding**: Menggunakan `gemini-embedding-001` dengan proses *batching* untuk efisiensi biaya dan performa tinggi.
 
 ## 🚀 Tech Stack
 - **Framework**: [FastAPI](https://fastapi.tiangolo.com/) (Asynchronous Python)
@@ -21,71 +21,51 @@
 
 ---
 
-## 🛠️ Installation & Setup
+## 📂 Struktur Proyek & File Penting
 
-### 1. Prerequisites
-- Python 3.12+
-- Redis Server (Running locally or via Docker)
-- Supabase Project with `pgvector` enabled
-
-### 2. Environment Configuration
-Copy the template and fill in your credentials:
-```bash
-cp .env.example .env
-```
-Key requirements in `.env`:
-- `GEMINI_API_KEY`: Your Google AI Studio API Key.
-- `APP_SECRET`: A secure 32-character string.
-- `REDIS_URL`: Defaults to `redis://localhost:6379`.
-
-### 3. Install Dependencies
-```bash
-python -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\activate
-pip install -r requirements.txt
-```
+| File / Folder | Fungsi Utama |
+| :--- | :--- |
+| `app/services/ai_service.py` | Pusat logika RAG, manajemen model Gemini, dan pembuatan *batch embedding*. |
+| `app/services/medical_record_service.py` | Mengambil data rekam medis pasien dan melakukan perankingan relevansi (Phase 1). |
+| `app/services/kms_service.py` | Menangani semua proses enkripsi/dekripsi Hybrid KMS untuk data medis sensitif. |
+| `app/services/supabase_service.py` | Operasi database vektor, termasuk *batch insertion* dan sistem *caching vector*. |
+| `app/routers/websocket.py` | Handler utama untuk koneksi real-time, autentikasi sesi, dan manajemen *feedback cycle*. |
+| `app/workers/rag_worker.py` | Backend worker (ARQ) yang memproses tugas RAG berat di latar belakang. |
 
 ---
 
-## 🏃 Running the Project
+## 🏃 Cara Menjalankan Proyek
 
-To run the full E2E pipeline, you need three processes running:
+Pastikan Anda memiliki Python 3.12+ dan Redis yang berjalan di lokal.
 
-### Terminal 1: FastAPI Server
-```bash
-uvicorn app.main:app --reload
-```
-
-### Terminal 2: ARQ Worker
-```bash
-arq app.workers.rag_worker.WorkerSettings
-```
-
-### Terminal 3: Test Client (Simulation)
-```bash
-python tests/test_ws_client.py
-```
+1.  **Environment**: Salin `.env.example` ke `.env` dan isi kredensial Anda.
+2.  **Server**: Jalankan FastAPI: `uvicorn app.main:app --reload`
+3.  **Worker**: Jalankan ARQ: `arq app.workers.rag_worker.WorkerSettings`
 
 ---
 
-## 📡 WebSocket API (Sequential Interaction)
-The chatbot uses a stateful WebSocket at `/ws/chat`:
-1. **init**: Server sends `session_init` with a UUID.
-2. **input**: Client sends `{ "prompt": "...", "password": "..." }`.
-3. **status**: Server notifies `Menghubungi AI...`.
-4. **streaming**: Server pushes text chunks via Redis Pub/Sub.
-5. **final**: Connection stays open for the next prompt or until closed.
+## 📡 Panduan Pengujian (Postman)
+
+Karena menggunakan WebSocket, Anda memerlukan fitur **WebSocket Request** di Postman:
+
+1.  **URL**: Masukkan `ws://localhost:8000/ws/chat`.
+2.  **Connect**: Klik tombol **Connect**. Server akan mengirimkan pesan `session_init` berisi UUID.
+3.  **Payload**: Kirim pesan dalam format JSON:
+    ```json
+    {
+      "prompt": "Apa diagnosa terakhir saya?",
+      "password": "PASSWORD_DEKRIPSI_ANDA",
+      "accessToken": "JWT_AUTH_TOKEN_SUPABASE"
+    }
+    ```
+4.  **Streaming**: Anda akan melihat pesan masuk bertipe `chunk` yang merupakan respon asinkron dari AI Dr. Kalbe.
 
 ---
 
-## 📂 Project Structure
-```text
-app/
-├── core/        # Configuration & Singletons (Supabase, Settings)
-├── models/      # Pydantic Schemas & Data Models
-├── routers/     # WebSocket & HTTP Route Handlers
-├── services/    # Business Logic (KMS, AI, Redis, Supabase)
-├── workers/     # Background ARQ Task Processing
-└── utils/       # Mocks & Helper Functions
-```
+## 📡 Skema WebSocket
+1.  **init**: Server mengirim `session_init` segera setelah koneksi terbuka.
+2.  **input**: Client mengirim `{ "prompt", "password", "accessToken" }`.
+3.  **status**: Server memberi tahu status proses (misal: "Menghubungi AI...").
+4.  **streaming**: Server mendorong potongan teks melalui Redis Pub/Sub secara real-time.
+5.  **final**: Pesan `is_final: true` menandakan akhir dari satu jawaban.
 

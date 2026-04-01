@@ -20,9 +20,9 @@ router = APIRouter(prefix="/ws", tags=["websocket"])
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     
-    # 1. Server-side Session ID Generation
+    # 1. Server-side Session Init
     session_id = str(uuid.uuid4())
-    user_id = "00000000-0000-0000-0000-000000000001" # Mock User ID
+    user_id = None # To be populated after auth
     
     await websocket.send_text(json.dumps({"type": "session_init", "session_id": session_id}))
 
@@ -41,7 +41,21 @@ async def websocket_endpoint(websocket: WebSocket):
             data = json.loads(raw_data)
             prompt = data.get("prompt")
             password = data.get("password")
+            accessToken = data.get("accessToken")
             correlation_id = str(uuid.uuid4())
+
+            # 1. Dynamic Auth (Supabase Local/Auth Provider)
+            if not user_id:
+                try:
+                    from app.core.supabase import supabase_auth
+                    auth_response = supabase_auth.auth.get_user(accessToken)
+                    user_id = auth_response.user.id
+                    logger.info(f"User authenticated (Local Auth): {user_id}")
+                except Exception as e:
+                    logger.error(f"Auth failed: {e}")
+                    await websocket.send_text(json.dumps({"type": "error", "msg": "Sesi tidak valid atau token kadaluarsa."}))
+                    await websocket.close(code=1008)
+                    return
 
             # B. Key Management (KMS Hybrid)
             kek = await redis_service.get_kek(session_id)
@@ -57,7 +71,9 @@ async def websocket_endpoint(websocket: WebSocket):
                 "correlation_id": correlation_id,
                 "user_id": user_id,
                 "prompt": prompt,
-                "kek": kek
+                "kek": kek, # Legacy/Session KEK
+                "password": password, # Raw password for identity KEK derivation
+                "accessToken": data.get("accessToken")
             }
             encrypted_payload = kms_service.encrypt_payload(task_payload, settings.APP_SECRET)
             
