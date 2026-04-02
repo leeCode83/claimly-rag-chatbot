@@ -45,8 +45,10 @@ jobs:
         MOCK_AUTH: "true"
         MOCK_IDENTITY: "true"
         APP_SECRET: "ci_test_secret_32_chars_long_long_long"
+        IDENTITY_API_URL: "http://mock.identity.co"
+        MEDICAL_API_URL: "http://mock.medical.co"
         SUPABASE_URL: "https://mock.supabase.co"
-        SUPABASE_ANON_KEY: "mock_key"
+        SUPABASE_KEY: "mock_key"
         GEMINI_API_KEY: "mock_gemini_key"
         REDIS_URL: "redis://localhost:6379"
       run: |
