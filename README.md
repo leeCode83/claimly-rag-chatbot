@@ -6,8 +6,6 @@
 
 ## ⚡ Arsitektur Performa Tinggi (Windows Optimized)
 
-![Architecture Diagram](file:///C:/Users/Leandro/.gemini/antigravity/brain/2c4128de-3e16-4ca3-ba05-0283bc7ccf2a/architecture_diagram_claimly_rag_1775119551723.png)
-
 Sistem ini didesain khusus untuk menangani **100+ concurrent users** di lingkungan Windows dengan optimasi berikut:
 
 - **Winloop (IOCP)**: Menggunakan event loop berbasis IOCP untuk I/O asinkron yang sangat cepat di Windows.
@@ -63,6 +61,31 @@ Kami menggunakan [k6](https://k6.io/) untuk memvalidasi performa sistem.
 ```powershell
 k6 run tests/load/chat_load_test.js
 ```
+
+---
+
+## 🧪 Unit Testing (Pytest)
+
+Kami menggunakan **Pytest** untuk pengujian fungsional secara terisolasi (offline/mocked).
+
+**Kebutuhan**: Instal dependensi testing (`pip install pytest pytest-asyncio pytest-mock pytest-cov`).
+
+**Eksekusi Unit Test**:
+```powershell
+# Menjalankan seluruh unit test
+.\venv\Scripts\python.exe -m pytest tests/unit/
+
+# Menjalankan dengan laporan detail coverage
+.\venv\Scripts\python.exe -m pytest --cov=app tests/unit/ --cov-report=term-missing
+```
+
+**Skenario yang Diuji**:
+- **KMS Service**: Enkripsi/dekripsi AES-GCM dan derivasi kunci.
+- **AI Service**: Intent detection dan streaming response (Mocked Gemini).
+- **Socket Router**: Lifecycle koneksi, auth bypass, dan antrean pesan.
+- **Redis Pool**: Singleton pattern dan penanganan kegagalan koneksi.
+
+---
 
 **Target Performa (SLA)**:
 - **TTFC (Time to First Chunk)**: p95 < 2.0 detik.

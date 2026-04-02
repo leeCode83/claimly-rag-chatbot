@@ -11,6 +11,10 @@ class MockAIService:
         self.model_name = 'mock-gemini'
         self.embed_model = "mock-embedding"
 
+    def get_client(self):
+        """Mock version of get_client for unit tests."""
+        return MagicMock()
+
     async def get_embedding(self, text: str) -> List[float]:
         """Simulasikan embedding dengan random vector 768 dimensi."""
         await asyncio.sleep(0.1) # Simulasi latensi rendah
