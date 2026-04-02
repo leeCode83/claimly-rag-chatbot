@@ -90,11 +90,22 @@ async def websocket_endpoint(websocket: WebSocket):
                         try:
                             chunk_data = json.loads(message["data"])
                             if chunk_data['correlation_id'] == correlation_id:
-                                await websocket.send_text(json.dumps({
-                                    "type": "chunk", 
-                                    "chunk": chunk_data['chunk'],
-                                    "is_final": chunk_data['is_final']
-                                }))
+                                msg_type = chunk_data.get("type", "chunk")
+                                
+                                if msg_type == "password_required":
+                                    # Forward the underlying metadata (already JSON in 'chunk' field)
+                                    metadata = json.loads(chunk_data["chunk"])
+                                    await websocket.send_text(json.dumps({
+                                        "type": "password_required",
+                                        **metadata
+                                    }))
+                                else:
+                                    await websocket.send_text(json.dumps({
+                                        "type": "chunk", 
+                                        "chunk": chunk_data['chunk'],
+                                        "is_final": chunk_data['is_final']
+                                    }))
+
                                 if chunk_data['is_final']:
                                     break
                         except Exception as e:

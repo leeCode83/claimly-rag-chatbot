@@ -41,9 +41,15 @@ async def process_medical_rag(ctx, encrypted_payload: str):
 
     try:
         # 3. Execute Two-Phase RAG Pipeline
-        # This handles Fetch -> Rank -> Decrypt -> Embed -> Final RAG
-        async for chunk in ai_service.process_selective_rag(user_id, prompt, session_id, correlation_id, password, accessToken):
-            await redis_service.publish_chunk(session_id, correlation_id, chunk)
+        # Now yields dictionaries: {"type": "chunk", "content": "..."} or {"type": "password_required", ...}
+        async for result in ai_service.process_selective_rag(user_id, prompt, session_id, correlation_id, password, accessToken):
+            msg_type = result.get("type", "chunk")
+            
+            if msg_type == "chunk":
+                await redis_service.publish_chunk(session_id, correlation_id, result["content"], msg_type="chunk")
+            elif msg_type == "password_required":
+                # For metadata types, we can pass the whole JSON-stringified dict or specific chunk
+                await redis_service.publish_chunk(session_id, correlation_id, json.dumps(result), msg_type="password_required")
         
         # 4. Finalize
         await redis_service.publish_chunk(session_id, correlation_id, "", is_final=True)

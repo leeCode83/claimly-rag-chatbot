@@ -17,10 +17,11 @@ class RedisService:
         """Force delete KEK on disconnect."""
         await self.redis_client.delete(f"kek:{session_id}")
 
-    async def publish_chunk(self, session_id: str, correlation_id: str, chunk: str, is_final: bool = False):
+    async def publish_chunk(self, session_id: str, correlation_id: str, chunk: str, msg_type: str = "chunk", is_final: bool = False):
         """Broadcast a streaming chunk back to the WebSocket via Pub/Sub."""
         channel = f"chat:{session_id}"
         message = {
+            "type": msg_type,
             "correlation_id": correlation_id,
             "chunk": chunk,
             "is_final": is_final

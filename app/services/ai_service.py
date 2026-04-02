@@ -160,12 +160,14 @@ Struktur jawabanmu sebagai berikut:
         
         if not relevant_records:
             async for chunk in self.stream_rag_answer(prompt, "Sistem tidak menemukan rekam medis yang relevan."):
-                yield chunk
+                yield {"type": "chunk", "content": chunk}
             return
 
         # Phase 2: Targeted Decryption & Context Preparation (Batch Optimized)
         records_to_embed = []
         record_contents = {} # map record_id -> content (plaintext)
+        password_required = False
+        sample_diagnosis = None
         
         # 1. First pass: Identify what's missing from cache
         for record in relevant_records:
@@ -183,13 +185,18 @@ Struktur jawabanmu sebagai berikut:
                     logger.error(f"Failed to decrypt record {record_id_str}: {e}")
                     record_contents[record_id_str] = "[Gagal mendekripsi catatan]"
             else:
+                password_required = True
+                sample_diagnosis = record.diagnosis.description
                 record_contents[record_id_str] = "[Catatan detail terenkripsi - Masukkan password untuk mengakses]"
+        
+        # Signal frontend if password is required
+        if password_required:
+            yield {"type": "password_required", "diagnosis": sample_diagnosis}
 
         # 2. Second pass: Generate embeddings in batch if needed
         if records_to_embed:
-            texts = [r["content"] for r in records_to_embed]
             try:
-                embeddings = await self.get_embeddings_batch(texts)
+                embeddings = await self.get_embeddings_batch([r["content"] for r in records_to_embed])
                 
                 # Prepare data for bulk insert
                 vectors_to_insert = []
@@ -218,7 +225,7 @@ Struktur jawabanmu sebagai berikut:
         # Final RAG with collected context
         combined_context = "\n\n".join(decrypted_contexts)
         async for chunk in self.stream_rag_answer(prompt, combined_context):
-            yield chunk
+            yield {"type": "chunk", "content": chunk}
 
 # Singleton
 ai_service = AIService()
