@@ -14,11 +14,34 @@ Sistem ini didesain khusus untuk menangani **100+ concurrent users** di lingkung
 
 ```mermaid
 graph TD
-    Client[100 VUs / k6] -->|WebSocket| API_LoadBalancer[FastAPI Multi-Worker]
-    API_LoadBalancer -->|Shared Listener| Redis_PubSub((Redis Stream))
-    API_LoadBalancer -->|Enqueue Job| ARQ_Queue((Redis Job Queue))
-    ARQ_Queue -->|Process| RAG_Workers[4x Arq Workers]
-    RAG_Workers -->|Publish| Redis_PubSub
+    %% Roles
+    Client[User / Client App] <-->|WebSocket| API[FastAPI API Workers]
+    
+    subgraph "Claimly Chatbot Backend"
+        API -->|1. Enqueue Job| Redis_Queue((ARQ Redis Queue))
+        Redis_Queue -->|2. Process Job| Worker[ARQ RAG Workers]
+        
+        %% Decryption Flow
+        Worker -->|3. Fetch Data| CoreAPI[Claimly Core / Identity API]
+        Note1[Medical Records & Crypto Keys] -.-> CoreAPI
+        
+        %% RAG Pipeline
+        Worker <-->|4. Semantic Search| Supabase[Supabase Vector Store]
+        Worker -->|5. Contextual Answer| Gemini[Google Gemini API]
+        
+        %% Real-time Feedback
+        Worker -->|6. Publish Chunks| Redis_PubSub((Redis Pub/Sub))
+        Redis_PubSub -->|7. Listen & Stream| API
+    end
+
+    %% Styling
+    classDef primary fill:#e1f5fe,stroke:#01579b,stroke-width:2px;
+    classDef storage fill:#fff3e0,stroke:#e65100,stroke-width:2px;
+    classDef external fill:#f3e5f5,stroke:#4a148c,stroke-width:2px;
+    
+    class API,Worker primary;
+    class Redis_Queue,Redis_PubSub,Supabase storage;
+    class CoreAPI,Gemini external;
 ```
 
 ---
@@ -90,6 +113,24 @@ Kami menggunakan **Pytest** untuk pengujian fungsional secara terisolasi (offlin
 **Target Performa (SLA)**:
 - **TTFC (Time to First Chunk)**: p95 < 2.0 detik.
 - **Success Rate**: 100% (No disconnected/timeout).
+
+---
+
+## 🔐 Keamanan & Kriptografi (Privacy-First)
+
+Sistem ini menggunakan standar enkripsi industri untuk memastikan rekam medis tetap rahasia.
+
+### 1. Dekripsi Private Key (Password-Based)
+*   **Algoritma**: PBKDF2-SHA256 & AES-256-GCM.
+*   **Proses**: Password user digunakan untuk menurunkan *Key Encryption Key* (KEK) melalui **PBKDF2 (310.000 iterasi)**. KEK ini digunakan untuk mendekripsi kunci privat (*Private Key*) user yang diambil dari Identity API.
+
+### 2. Dekripsi Rekam Medis (ECIES)
+*   **Algoritma**: P-256 ECIES (ECDH + SHA256 KDF + AES-256-GCM).
+*   **Proses**: Menggunakan mekanisme *Elliptic Curve Integrated Encryption Scheme*. Kunci privat user dipadukan dengan **Ephemeral Public Key (EPK)** yang ada di dalam payload rekam medis untuk menghasilkan kunci AES-256 secara *on-the-fly* guna mendekripsi isi catatan medis.
+
+### 3. Enkripsi Payload Internal
+*   **Algoritma**: AES-256-GCM dengan App Secret.
+*   **Proses**: Data tugas yang dikirim ke background worker (via Redis) dienkripsi menggunakan internal secret aplikasi untuk mencegah kebocoran data di lapisan antrean (*message broker*).
 
 ---
 
