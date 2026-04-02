@@ -16,7 +16,6 @@ from app.services.kms_service import kms_service
 from app.services.ai_service import ai_service
 from app.services.supabase_service import supabase_service
 from app.services.redis_service import redis_service
-from app.utils.mocks import api_mock
 import json
 
 async def process_medical_rag(ctx, encrypted_payload: str):
@@ -56,8 +55,12 @@ async def process_medical_rag(ctx, encrypted_payload: str):
         print(f"RAG Task complete for session {session_id}")
 
     except Exception as e:
-        print(f"Error in Worker: {str(e)}")
-        await redis_service.publish_chunk(session_id, correlation_id, f"Error: {str(e)}", is_final=True)
+        error_msg = str(e)
+        print(f"Error in Worker: {error_msg}")
+        # Jika error mengandung kata "Maaf", berarti itu error bisnis/user-friendly dari service
+        # Jika tidak, berikan pesan teknis standar.
+        friendly_msg = error_msg if "Maaf" in error_msg else "Terjadi kesalahan teknis pada sistem chatbot. Mohon coba lagi nanti."
+        await redis_service.publish_chunk(session_id, correlation_id, friendly_msg, msg_type="error", is_final=True)
 
 class WorkerSettings:
     """ARQ Worker Settings."""

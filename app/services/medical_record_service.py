@@ -1,7 +1,6 @@
 from typing import List
 import logging
 from app.models.schemas import MedicalRecord
-from app.utils.mocks import api_mock
 from app.services.ai_service import ai_service
 from app.core.config import settings
 from app.core.http import get_http_client
@@ -16,8 +15,8 @@ class MedicalRecordService:
         Fetch patient records from Medical API using user's bearer token.
         """
         if not access_token:
-            logger.warning("Access token missing, falling back to Mock.")
-            return await api_mock.get_medical_records(user_id)
+            logger.warning("Access token missing.")
+            raise Exception("Maaf, sesi Anda tidak valid atau token hilang. Silakan login kembali.")
 
         try:
             client = get_http_client()
@@ -35,10 +34,10 @@ class MedicalRecordService:
                 return [MedicalRecord(**r) for r in records_raw]
             else:
                 logger.error(f"Medical API Error {response.status_code}: {response.text}")
-                return await api_mock.get_medical_records(user_id)
+                raise Exception("Maaf, kami tidak dapat mengakses data medis Anda saat ini. Pastikan akun Anda sudah terdaftar dengan benar.")
         except Exception as e:
-            logger.error(f"Connection to Medical API failed: {str(e)}. Falling back to Mock.")
-            return await api_mock.get_medical_records(user_id)
+            logger.error(f"Connection to Medical API failed: {str(e)}")
+            raise Exception("Server medis sedang sibuk atau tidak merespons. Mohon coba lagi beberapa saat lagi.")
 
     async def rank_relevant_records(self, prompt: str, records: List[MedicalRecord], limit: int = 5) -> List[MedicalRecord]:
         """
@@ -66,8 +65,12 @@ class MedicalRecordService:
         Daftar Rekam Medis (Metadata):
         {json.dumps(metadata_summary, indent=2)}
         
+        ATURAN PENTING:
+        1. Jika pertanyaan user bersifat umum (Halo, Apa kabar, Siapa kamu) atau tidak terkait dengan data kesehatan personal, kembalikan LIST KOSONG `[]`.
+        2. Hanya pilih ID jika pertanyaan membutuhkan data medis (misal: "Apa diagnosa saya?", "Hasil lab?").
+        
         Instruksi format output:
-        Hanya kembalikan list ID dalam format JSON (misal: ["id1", "id2"]). Jangan berikan penjelasan apapun.
+        Hanya kembalikan list ID dalam format JSON (misal: ["id1", "id2"] atau []). Jangan berikan penjelasan apapun.
         """
 
         try:

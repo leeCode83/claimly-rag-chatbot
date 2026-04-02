@@ -43,6 +43,34 @@ class AIService:
                 config=types.EmbedContentConfig(task_type='RETRIEVAL_DOCUMENT')
             )
             return [emb.values for emb in response.embeddings]
+    async def detect_medical_intent(self, prompt: str) -> str:
+        """
+        Determines if the prompt requires internal medical record access or is a general query.
+        Returns: 'medical' or 'general'.
+        """
+        intent_prompt = f"""
+        Identifikasi niat user dari pesan berikut: "{prompt}"
+        
+        KATEGORI:
+        - 'medical': User bertanya mengenai dirinya sendiri ("Kenapa saya...", "Bagaimana diagnosa saya..."), meminta data hasil lab/catatan medis, atau menanyakan riwayat kesehatan personal.
+        - 'general': Sapaan (Halo, Hai), pertanyaan umum tentang kesehatan ("Apa itu flu?", "Cara hidup sehat?"), atau obrolan santai yang tidak butuh data privasi.
+        
+        OUTPUT:
+        Hanya jawab dengan satu kata: 'medical' atau 'general'. Jangan berikan penjelasan.
+        """
+        
+        try:
+            client = self.get_client()
+            async with client.aio as async_client:
+                response = await async_client.models.generate_content(
+                    model=self.model_name,
+                    contents=intent_prompt
+                )
+                intent = response.text.strip().lower()
+                return 'medical' if 'medical' in intent else 'general'
+        except Exception as e:
+            logger.error(f"Intent detection failed: {e}")
+            return 'medical' # Fallback to medical for safety
 
     async def stream_rag_answer(self, prompt: str, context: str) -> AsyncGenerator[str, None]:
         """Generate RAG-enabled answer dengan streaming menggunakan Gemini 2.5."""
@@ -154,12 +182,28 @@ Struktur jawabanmu sebagai berikut:
                 yield json.dumps({"type": "chunk", "chunk": f"Otentikasi kunci gagal: {str(e)}", "is_final": False})
                 return
 
+        # Phase 0: Intent Detection (Optimize API Usage)
+        intent = await self.detect_medical_intent(prompt)
+        all_records = []
+        error_context = ""
+
+        if intent == "medical":
+            try:
+                all_records = await medical_record_service.fetch_patient_records(user_id, access_token)
+                if not all_records:
+                    error_context = "User ini belum memiliki rekam medis digital. Beritahu mereka untuk mendaftar jika perlu."
+            except Exception as e:
+                logger.error(f"Failed to fetch medical records for RAG: {e}")
+                error_context = "Sistem saat ini sedang kesulitan mengakses data medis Anda. Mohon maaf atas kendala teknis ini."
+        
         # Phase 1: Fetch and Rank Metadata (Fast & Low Cost)
-        all_records = await medical_record_service.fetch_patient_records(user_id, access_token)
-        relevant_records = await medical_record_service.rank_relevant_records(prompt, all_records, limit=5)
+        relevant_records = []
+        if all_records:
+            relevant_records = await medical_record_service.rank_relevant_records(prompt, all_records, limit=5)
         
         if not relevant_records:
-            async for chunk in self.stream_rag_answer(prompt, "Sistem tidak menemukan rekam medis yang relevan."):
+            context_to_send = error_context if error_context else "Tidak ada rekam medis yang relevan ditemukan."
+            async for chunk in self.stream_rag_answer(prompt, context_to_send):
                 yield {"type": "chunk", "content": chunk}
             return
 
@@ -192,6 +236,7 @@ Struktur jawabanmu sebagai berikut:
         # Signal frontend if password is required
         if password_required:
             yield {"type": "password_required", "diagnosis": sample_diagnosis}
+            return # Abort further processing until password is provided
 
         # 2. Second pass: Generate embeddings in batch if needed
         if records_to_embed:
