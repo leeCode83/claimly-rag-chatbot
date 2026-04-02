@@ -1,11 +1,12 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from typing import Optional
+from typing import Optional, List
 
 class Settings(BaseSettings):
     # App General
     APP_NAME: str = "Claimly RAG Chatbot"
     DEBUG: bool = True
     APP_SECRET: str
+    ALLOWED_ORIGINS: List[str] = ["http://localhost:3000"]
     
     # API URLs
     IDENTITY_API_URL: str
