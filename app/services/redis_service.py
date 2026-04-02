@@ -3,7 +3,13 @@ from app.core.config import settings
 
 class RedisService:
     def __init__(self):
-        self.redis_client = redis.from_url(settings.REDIS_URL, decode_responses=True)
+        # Increased max_connections to 200 to handle many concurrent Pub/Sub listeners during load tests
+        self.redis_client = redis.from_url(
+            settings.REDIS_URL, 
+            decode_responses=True,
+            max_connections=50, # Reduced to 50 as we now use Shared PubSub (saving connection pool)
+            health_check_interval=30
+        )
 
     async def set_kek(self, session_id: str, kek: str, ttl: int = 3600):
         """Cache KEK in Redis for the duration of the session."""

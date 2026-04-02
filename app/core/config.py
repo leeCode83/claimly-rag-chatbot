@@ -26,6 +26,11 @@ class Settings(BaseSettings):
     # Gemini AI
     GEMINI_API_KEY: str
     
+    # Testing & Mocks
+    MOCK_AI: bool = False
+    MOCK_IDENTITY: bool = False
+    MOCK_AUTH: bool = False
+    
     # Config for .env
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 

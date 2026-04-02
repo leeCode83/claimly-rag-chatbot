@@ -4,8 +4,7 @@ from app.services.kms_service import kms_service
 from app.services.redis_service import redis_service
 from app.services.supabase_service import supabase_service
 from app.models.schemas import ChatRequest, ChatChunk
-from arq import create_pool
-from arq.connections import RedisSettings
+from app.core.redis_pool import redis_pool_manager
 import uuid
 import json
 import asyncio
@@ -24,13 +23,17 @@ async def websocket_endpoint(websocket: WebSocket):
     session_id = str(uuid.uuid4())
     user_id = None # To be populated after auth
     
+    # --- SESSION INITIALIZATION ---
+    queue = asyncio.Queue()
+    websocket.app.state.active_queues[session_id] = queue
+    
     await websocket.send_text(json.dumps({"type": "session_init", "session_id": session_id}))
 
-    # Setup Redis Pool for ARQ
+    # Get Global Redis Pool for ARQ
     try:
-        redis_pool = await create_pool(RedisSettings.from_dsn(settings.REDIS_URL))
+        redis_pool = redis_pool_manager.get_pool()
     except Exception as e:
-        logger.error(f"Failed to create Redis Pool: {e}")
+        logger.error(f"Failed to get Global Redis Pool: {e}")
         await websocket.close(code=1011)
         return
 
@@ -46,24 +49,27 @@ async def websocket_endpoint(websocket: WebSocket):
 
             # 1. Dynamic Auth (Supabase Local/Auth Provider)
             if not user_id:
-                try:
-                    from app.core.supabase import supabase_auth
-                    auth_response = supabase_auth.auth.get_user(accessToken)
-                    user_id = auth_response.user.id
-                    logger.info(f"User authenticated (Local Auth): {user_id}")
-                except Exception as e:
-                    logger.error(f"Auth failed: {e}")
-                    await websocket.send_text(json.dumps({"type": "error", "msg": "Sesi tidak valid atau token kadaluarsa."}))
-                    await websocket.close(code=1008)
-                    return
+                if settings.MOCK_AUTH:
+                    user_id = "mock_user_123"
+                    logger.info(f"Using MOCK_AUTH for user: {user_id}")
+                else:
+                    try:
+                        from app.core.supabase import supabase_auth
+                        auth_response = supabase_auth.auth.get_user(accessToken)
+                        user_id = auth_response.user.id
+                        logger.info(f"User authenticated (Local Auth): {user_id}")
+                    except Exception as e:
+                        logger.error(f"Auth failed: {e}")
+                        await websocket.send_text(json.dumps({"type": "error", "msg": "Sesi tidak valid atau token kadaluarsa."}))
+                        await websocket.close(code=1008)
+                        return
 
             # B. Key Management (KMS Hybrid)
             kek = await redis_service.get_kek(session_id)
-            if not kek:
-                salt = b"DUMMY_SALT_16_BYTES" 
-                kek_bytes = kms_service.derive_kek(password, salt)
-                kek = kek_bytes.hex()
-                await redis_service.set_kek(session_id, kek)
+            kek = data.get("kek")
+
+            if not prompt:
+                continue
 
             # C. Secure Task Enqueueing
             task_payload = {
@@ -77,50 +83,46 @@ async def websocket_endpoint(websocket: WebSocket):
             }
             encrypted_payload = kms_service.encrypt_payload(task_payload, settings.APP_SECRET)
             
-            # D. Enqueue Background Task (ARQ)
+            # D. ENQUEUE & LISTEN VIA SHARED QUEUE
+            # Enqueue Background Task (ARQ)
             await redis_pool.enqueue_job("process_medical_rag", encrypted_payload)
             await websocket.send_text(json.dumps({"type": "status", "msg": "Menghubungi AI...", "cid": correlation_id}))
 
-            # E. SEQUENTIAL LISTENING: One prompt at a time 
-            async with redis_service.redis_client.pubsub() as pubsub:
-                await pubsub.subscribe(f"chat:{session_id}")
-                
-                async for message in pubsub.listen():
-                    if message["type"] == "message":
-                        try:
-                            chunk_data = json.loads(message["data"])
-                            if chunk_data['correlation_id'] == correlation_id:
-                                msg_type = chunk_data.get("type", "chunk")
-                                
-                                if msg_type == "password_required":
-                                    # Forward the underlying metadata (already JSON in 'chunk' field)
-                                    metadata = json.loads(chunk_data["chunk"])
-                                    await websocket.send_text(json.dumps({
-                                        "type": "password_required",
-                                        **metadata
-                                    }))
-                                else:
-                                    await websocket.send_text(json.dumps({
-                                        "type": "chunk", 
-                                        "chunk": chunk_data['chunk'],
-                                        "is_final": chunk_data['is_final']
-                                    }))
+            # E. SEQUENTIAL LISTENING FROM QUEUE
+            while True:
+                message_data = await queue.get()
+                try:
+                    chunk_data = json.loads(message_data)
+                    if chunk_data['correlation_id'] == correlation_id:
+                        msg_type = chunk_data.get("type", "chunk")
+                        
+                        if msg_type == "password_required":
+                            metadata = json.loads(chunk_data["chunk"])
+                            await websocket.send_text(json.dumps({
+                                "type": "password_required",
+                                **metadata
+                            }))
+                        else:
+                            await websocket.send_text(json.dumps({
+                                "type": "chunk", 
+                                "chunk": chunk_data['chunk'],
+                                "is_final": chunk_data['is_final']
+                            }))
 
-                                if chunk_data['is_final']:
-                                    break
-                        except Exception as e:
-                            logger.error(f"Error parsing chunk: {e}")
-                            continue
-                
-                await pubsub.unsubscribe(f"chat:{session_id}")
+                        if chunk_data['is_final']:
+                            break
+                except Exception as e:
+                    logger.error(f"Error parsing queue message: {e}")
+                    continue
 
     except WebSocketDisconnect:
-        await redis_service.delete_kek(session_id)
+        logger.info(f"Client disconnected: {user_id}")
     except Exception as e:
-        logger.error(f"WebSocket Error: {str(e)}")
-        try:
-            await websocket.send_text(json.dumps({"type": "error", "msg": "Terjadi kesalahan internal pada server."}))
-        except:
-            pass
+        logger.error(f"WebSocket Error: {e}")
     finally:
-        await redis_pool.close()
+        # Cleanup session queue to prevent memory leaks
+        if session_id in websocket.app.state.active_queues:
+            del websocket.app.state.active_queues[session_id]
+        
+        # Cleanup KEK if it is a session-based KEK
+        await redis_service.delete_kek(session_id)

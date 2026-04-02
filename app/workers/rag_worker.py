@@ -66,3 +66,4 @@ class WorkerSettings:
     """ARQ Worker Settings."""
     functions = [process_medical_rag]
     redis_settings = RedisSettings.from_dsn(settings.REDIS_URL)
+    max_jobs = 25  # Rebalanced: 4 workers x 25 jobs = 100 total capacity
