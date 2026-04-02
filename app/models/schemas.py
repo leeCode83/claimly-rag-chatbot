@@ -5,6 +5,19 @@ from typing import List, Optional
 
 # --- External API Mock Models ---
 
+class DiagnosisInfo(BaseModel):
+    icd10_code: str
+    description: str
+
+class PatientInfo(BaseModel):
+    id: UUID
+    full_name: str
+
+class DoctorInfo(BaseModel):
+    id: UUID
+    role: str
+    full_name: str
+
 class MedicalRecord(BaseModel):
     id: UUID
     patient_id: UUID
@@ -14,6 +27,9 @@ class MedicalRecord(BaseModel):
     diagnosis_date_encoded: int
     attending_doctor_id: UUID
     notes_encrypted: Optional[str] = None
+    diagnosis: DiagnosisInfo
+    patient: PatientInfo
+    attending_doctor: DoctorInfo
     created_at: datetime
 
 class UserKeys(BaseModel):
@@ -26,6 +42,7 @@ class UserKeys(BaseModel):
 class ChatRequest(BaseModel):
     prompt: str
     password: str
+    accessToken: str
 
 class ChatChunk(BaseModel):
     """Payload for streaming chunks over WebSocket."""
@@ -42,3 +59,4 @@ class TaskPayload(BaseModel):
     user_id: str
     prompt: str
     kek: str  # Encrypted using APP_SECRET in KMSService before enqueue
+    accessToken: str

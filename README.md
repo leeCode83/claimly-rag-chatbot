@@ -1,91 +1,89 @@
 # Claimly RAG Chatbot: Secure On-Demand Medical Assistant
 
-**Claimly RAG Chatbot** is a privacy-first, zero-persistence backend service designed to handle sensitive medical records. It leverages **FastAPI**, **Redis (RAM-only)**, and **Google Gemini 2.5/3.0** to provide real-time, RAG-enabled medical insights via secure WebSockets.
+**Claimly RAG Chatbot** adalah backend service berbasis AI yang mengutamakan privasi (*privacy-first*) dan *zero-persistence* untuk menangani rekam medis sensitif. Menggunakan **FastAPI**, **Redis (RAM-only)**, dan **Google Gemini**, sistem ini memberikan wawasan medis secara real-time melalui WebSockets yang aman.
 
 ---
 
-## 🛡️ Privacy & Security Features
-- **Zero-Persistence Architecture**: Configured with a RAM-only Redis (RDB/AOF disabled) to ensure session data never touches the disk.
-- **KMS Hybrid Engine**: 
-    - Uses **Argon2id** (KDF) for high-entropy Key Encryption Key (KEK) derivation.
-    - Uses **AES-256-GCM** for end-to-end task payload encryption.
-- **Proactive Cleanup**: Session keys and sensitive decrypted records are immediately purged from RAM upon WebSocket disconnection.
-- **Sticky Vectors**: Embeddings are temporarily stored and validated against user consent, ensuring data isolation.
+## ⚡ Arsitektur Performa Tinggi (Windows Optimized)
 
-## 🚀 Tech Stack
-- **Framework**: [FastAPI](https://fastapi.tiangolo.com/) (Asynchronous Python)
-- **AI/LLM**: [Google Gen AI SDK](https://github.com/google-gemini/generative-ai-python) (Gemini 2.5 Flash / Gemini 3.0)
-- **Vector DB**: [Supabase](https://supabase.com/) (PostgreSQL + `pgvector`)
-- **Task Queue**: [ARQ](https://github.com/samuelcolvin/arq) (Redis-based)
-- **Caching/Streaming**: Redis (RAM-Only)
+![Architecture Diagram](file:///C:/Users/Leandro/.gemini/antigravity/brain/2c4128de-3e16-4ca3-ba05-0283bc7ccf2a/architecture_diagram_claimly_rag_1775119551723.png)
 
----
+Sistem ini didesain khusus untuk menangani **100+ concurrent users** di lingkungan Windows dengan optimasi berikut:
 
-## 🛠️ Installation & Setup
+- **Winloop (IOCP)**: Menggunakan event loop berbasis IOCP untuk I/O asinkron yang sangat cepat di Windows.
+- **Shared PubSub Listener**: Menggunakan satu koneksi Redis Pub/Sub global per worker process. Pesan didistribusikan secara internal melalui `asyncio.Queue` (Fan-out pattern) untuk menghemat ribuan koneksi Redis.
+- **Multi-Worker Scaling**: Berjalan dalam mode multi-process (4 API workers & 4 Worker instances) untuk memanfaatkan seluruh core CPU.
 
-### 1. Prerequisites
-- Python 3.12+
-- Redis Server (Running locally or via Docker)
-- Supabase Project with `pgvector` enabled
-
-### 2. Environment Configuration
-Copy the template and fill in your credentials:
-```bash
-cp .env.example .env
-```
-Key requirements in `.env`:
-- `GEMINI_API_KEY`: Your Google AI Studio API Key.
-- `APP_SECRET`: A secure 32-character string.
-- `REDIS_URL`: Defaults to `redis://localhost:6379`.
-
-### 3. Install Dependencies
-```bash
-python -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\activate
-pip install -r requirements.txt
+```mermaid
+graph TD
+    Client[100 VUs / k6] -->|WebSocket| API_LoadBalancer[FastAPI Multi-Worker]
+    API_LoadBalancer -->|Shared Listener| Redis_PubSub((Redis Stream))
+    API_LoadBalancer -->|Enqueue Job| ARQ_Queue((Redis Job Queue))
+    ARQ_Queue -->|Process| RAG_Workers[4x Arq Workers]
+    RAG_Workers -->|Publish| Redis_PubSub
 ```
 
 ---
 
-## 🏃 Running the Project
+## 🛠️ Sistem Mock (Developer Mode)
 
-To run the full E2E pipeline, you need three processes running:
+Untuk pengujian tanpa memakan kuota API atau membutuhkan database asli, gunakan flag environment berikut:
 
-### Terminal 1: FastAPI Server
-```bash
-uvicorn app.main:app --reload
-```
-
-### Terminal 2: ARQ Worker
-```bash
-arq app.workers.rag_worker.WorkerSettings
-```
-
-### Terminal 3: Test Client (Simulation)
-```bash
-python tests/test_ws_client.py
-```
+- `MOCK_AI=true`: Mengganti pemanggilan Gemini dengan respon streaming simulasi.
+- `MOCK_AUTH=true`: Melewati validasi token Supabase (user_id otomatis `mock_user_123`).
+- `MOCK_IDENTITY=true`: Menggunakan kunci enkripsi statis tanpa perlu derivasi Argon2id yang berat di CPU.
 
 ---
 
-## 📡 WebSocket API (Sequential Interaction)
-The chatbot uses a stateful WebSocket at `/ws/chat`:
-1. **init**: Server sends `session_init` with a UUID.
-2. **input**: Client sends `{ "prompt": "...", "password": "..." }`.
-3. **status**: Server notifies `Menghubungi AI...`.
-4. **streaming**: Server pushes text chunks via Redis Pub/Sub.
-5. **final**: Connection stays open for the next prompt or until closed.
+## 🚀 Cara Menjalankan (Production/Scale Mode)
+
+Gunakan skrip PowerShell yang disediakan untuk konsistensi environment:
+
+1.  **Jalankan Workers**:
+    ```powershell
+    .\run_workers.ps1
+    ```
+    *(Membuka 4 jendela worker baru dengan `MOCK_AI=true`)*
+
+2.  **Jalankan API**:
+    ```powershell
+    .\run_api.ps1
+    ```
+    *(Menjalankan FastAPI dengan 4 workers di port 8000)*
 
 ---
 
-## 📂 Project Structure
-```text
-app/
-├── core/        # Configuration & Singletons (Supabase, Settings)
-├── models/      # Pydantic Schemas & Data Models
-├── routers/     # WebSocket & HTTP Route Handlers
-├── services/    # Business Logic (KMS, AI, Redis, Supabase)
-├── workers/     # Background ARQ Task Processing
-└── utils/       # Mocks & Helper Functions
+## 📊 Load Testing (k6)
+
+Kami menggunakan [k6](https://k6.io/) untuk memvalidasi performa sistem.
+
+**Kebutuhan**: Instal k6 di Windows (`winget install gnu.k6`).
+
+**Eksekusi Test**:
+```powershell
+k6 run tests/load/chat_load_test.js
 ```
 
+**Target Performa (SLA)**:
+- **TTFC (Time to First Chunk)**: p95 < 2.0 detik.
+- **Success Rate**: 100% (No disconnected/timeout).
+
+---
+
+## 📂 Struktur Proyek & File Penting
+
+| File / Folder | Fungsi Utama |
+| :--- | :--- |
+| `app/main.py` | Entry point dengan integrasi `winloop` dan `Shared PubSub Listener`. |
+| `app/routers/websocket.py` | Manajemen koneksi WebSocket dengan sistem antrean internal per-user. |
+| `app/workers/rag_worker.py` | Backend worker (ARQ) yang memproses tugas RAG berat. |
+| `run_api.ps1` / `run_workers.ps1` | Skrip otomasi deployment lokal dengan konfigurasi optimal. |
+
+---
+
+## 📡 Skema WebSocket
+1.  **session_init**: Server mengirim UUID sesi segera setelah koneksi terbuka.
+2.  **input**: Client mengirim `{ "prompt", "password", "accessToken" }`.
+3.  **status**: Server memberi tahu status proses (misal: "Menghubungi AI...").
+4.  **chunk**: Server mendorong potongan teks secara real-time.
+5.  **final**: Pesan `is_final: true` menandakan akhir dari satu jawaban.

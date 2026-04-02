@@ -16,7 +16,6 @@ from app.services.kms_service import kms_service
 from app.services.ai_service import ai_service
 from app.services.supabase_service import supabase_service
 from app.services.redis_service import redis_service
-from app.utils.mocks import api_mock
 import json
 
 async def process_medical_rag(ctx, encrypted_payload: str):
@@ -34,36 +33,37 @@ async def process_medical_rag(ctx, encrypted_payload: str):
     session_id = payload['session_id']
     correlation_id = payload['correlation_id']
     prompt = payload['prompt']
-    kek = payload['kek'] # User-derived KEK
+    password = payload['password']
+    accessToken = payload['accessToken']
 
     print(f"Worker processing RAG for session {session_id}")
 
     try:
-        # 2. Fetch Medical Records (Mock)
-        records = await api_mock.get_medical_records(user_id)
+        # 3. Execute Two-Phase RAG Pipeline
+        # Now yields dictionaries: {"type": "chunk", "content": "..."} or {"type": "password_required", ...}
+        async for result in ai_service.process_selective_rag(user_id, prompt, session_id, correlation_id, password, accessToken):
+            msg_type = result.get("type", "chunk")
+            
+            if msg_type == "chunk":
+                await redis_service.publish_chunk(session_id, correlation_id, result["content"], msg_type="chunk")
+            elif msg_type == "password_required":
+                # For metadata types, we can pass the whole JSON-stringified dict or specific chunk
+                await redis_service.publish_chunk(session_id, correlation_id, json.dumps(result), msg_type="password_required")
         
-        # 3. Perform RAG Pipeline
-        context_parts = []
-        for record in records:
-            # Here we would normally decrypt using KEK
-            plaintext_notes = "Pasien memiliki riwayat alergi parasetamol dan asma."
-            context_parts.append(f"Diagnosis: {record.diagnosis_id}\nNotes: {plaintext_notes}")
-        
-        context = "\n---\n".join(context_parts)
-
-        # 4. Stream RAG Answer via AI Service
-        async for chunk in ai_service.stream_rag_answer(prompt, context):
-            await redis_service.publish_chunk(session_id, correlation_id, chunk)
-        
-        # 5. Finalize
+        # 4. Finalize
         await redis_service.publish_chunk(session_id, correlation_id, "", is_final=True)
         print(f"RAG Task complete for session {session_id}")
 
     except Exception as e:
-        print(f"Error in Worker: {str(e)}")
-        await redis_service.publish_chunk(session_id, correlation_id, f"Error: {str(e)}", is_final=True)
+        error_msg = str(e)
+        print(f"Error in Worker: {error_msg}")
+        # Jika error mengandung kata "Maaf", berarti itu error bisnis/user-friendly dari service
+        # Jika tidak, berikan pesan teknis standar.
+        friendly_msg = error_msg if "Maaf" in error_msg else "Terjadi kesalahan teknis pada sistem chatbot. Mohon coba lagi nanti."
+        await redis_service.publish_chunk(session_id, correlation_id, friendly_msg, msg_type="error", is_final=True)
 
 class WorkerSettings:
     """ARQ Worker Settings."""
     functions = [process_medical_rag]
     redis_settings = RedisSettings.from_dsn(settings.REDIS_URL)
+    max_jobs = 25  # Rebalanced: 4 workers x 25 jobs = 100 total capacity

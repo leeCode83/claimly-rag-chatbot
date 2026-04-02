@@ -3,7 +3,13 @@ from app.core.config import settings
 
 class RedisService:
     def __init__(self):
-        self.redis_client = redis.from_url(settings.REDIS_URL, decode_responses=True)
+        # Increased max_connections to 200 to handle many concurrent Pub/Sub listeners during load tests
+        self.redis_client = redis.from_url(
+            settings.REDIS_URL, 
+            decode_responses=True,
+            max_connections=50, # Reduced to 50 as we now use Shared PubSub (saving connection pool)
+            health_check_interval=30
+        )
 
     async def set_kek(self, session_id: str, kek: str, ttl: int = 3600):
         """Cache KEK in Redis for the duration of the session."""
@@ -17,10 +23,11 @@ class RedisService:
         """Force delete KEK on disconnect."""
         await self.redis_client.delete(f"kek:{session_id}")
 
-    async def publish_chunk(self, session_id: str, correlation_id: str, chunk: str, is_final: bool = False):
+    async def publish_chunk(self, session_id: str, correlation_id: str, chunk: str, msg_type: str = "chunk", is_final: bool = False):
         """Broadcast a streaming chunk back to the WebSocket via Pub/Sub."""
         channel = f"chat:{session_id}"
         message = {
+            "type": msg_type,
             "correlation_id": correlation_id,
             "chunk": chunk,
             "is_final": is_final
