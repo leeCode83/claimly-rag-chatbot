@@ -40,6 +40,7 @@ jobs:
 
     - name: Run Pytest
       env:
+        PYTHONPATH: .
         MOCK_AI: "true"
         MOCK_AUTH: "true"
         MOCK_IDENTITY: "true"
