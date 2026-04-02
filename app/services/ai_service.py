@@ -272,5 +272,10 @@ Struktur jawabanmu sebagai berikut:
         async for chunk in self.stream_rag_answer(prompt, combined_context):
             yield {"type": "chunk", "content": chunk}
 
-# Singleton
-ai_service = AIService()
+# Singleton Instance Factory
+if settings.MOCK_AI:
+    from app.services.mocks.ai_service_mock import MockAIService
+    ai_service = MockAIService()
+    print("WARNING: AIService is running in MOCK mode.")
+else:
+    ai_service = AIService()

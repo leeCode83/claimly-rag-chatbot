@@ -28,5 +28,10 @@ class IdentityService:
             logger.error(f"Connection to Identity API failed: {str(e)}")
             raise
 
-# Singleton
-identity_service = IdentityService()
+# Singleton Instance Factory
+if settings.MOCK_IDENTITY:
+    from app.services.mocks.identity_service_mock import MockIdentityService
+    identity_service = MockIdentityService()
+    print("WARNING: IdentityService is running in MOCK mode.")
+else:
+    identity_service = IdentityService()

@@ -39,8 +39,9 @@ services:
   # Worker: ARQ Background Processor for RAG
   worker:
     image: claimly_rag_chatbot:latest
-    container_name: claimly_worker
     restart: always
+    deploy:
+      replicas: 2
     env_file:
       - .env.docker
     environment:
