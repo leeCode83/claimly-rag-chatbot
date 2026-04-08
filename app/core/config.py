@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     # Supabase (Vector Store - Cloud)
     SUPABASE_URL: str
     SUPABASE_KEY: str
+    SUPABASE_SERVICE_ROLE_KEY: Optional[str] = None
     
     # Supabase (Auth - Local)
     SUPABASE_AUTH_URL: Optional[str] = None

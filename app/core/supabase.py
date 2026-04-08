@@ -3,7 +3,9 @@ from app.core.config import settings
 
 # Hybrid Supabase Clients
 # supabase_vector: Mengarah ke Cloud (untuk tabel session_vectors)
-supabase_vector: Client = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
+# Menggunakan SERVICE_ROLE_KEY untuk bypass RLS pada background worker
+vector_key = settings.SUPABASE_SERVICE_ROLE_KEY or settings.SUPABASE_KEY
+supabase_vector: Client = create_client(settings.SUPABASE_URL, vector_key)
 
 # supabase_auth: Mengarah ke Lokal / Auth Provider (untuk verifikasi JWT)
 # Jika SUPABASE_AUTH_URL tidak diset, gunakan cloud client sebagai default

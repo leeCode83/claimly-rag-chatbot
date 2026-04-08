@@ -53,7 +53,7 @@ class TestKMSService:
         iv_b64 = base64.b64encode(iv).decode()
         
         result = kms.decrypt_private_key(encrypted_b64, password, salt_b64, iv_b64)
-        assert result == plaintext_key
+        assert result == plaintext_key.encode()
 
     def test_decrypt_private_key_failure(self, kms):
         with pytest.raises(Exception, match="Invalid password or corrupted key data"):
