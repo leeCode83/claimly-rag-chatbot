@@ -11,7 +11,7 @@ logger = logging.getLogger("uvicorn.error")
 
 class AIService:
     def __init__(self):
-        # Menggunakan model gemini-1.5-flash-latest untuk kompatibilitas lebih baik
+        # Menggunakan model gemini-1.5-flash untuk stabilitas produksi
         self.model_name = 'gemini-2.5-flash' 
         self.embed_model = "gemini-embedding-001"
 
@@ -26,7 +26,10 @@ class AIService:
             response = await async_client.models.embed_content(
                 model=self.embed_model,
                 contents=text,
-                config=types.EmbedContentConfig(task_type='RETRIEVAL_DOCUMENT')
+                config=types.EmbedContentConfig(
+                    task_type='RETRIEVAL_QUERY',
+                    output_dimensionality=768
+                )
             )
             return response.embeddings[0].values
 
@@ -40,7 +43,10 @@ class AIService:
             response = await async_client.models.embed_content(
                 model=self.embed_model,
                 contents=texts,
-                config=types.EmbedContentConfig(task_type='RETRIEVAL_DOCUMENT')
+                config=types.EmbedContentConfig(
+                    task_type='RETRIEVAL_DOCUMENT',
+                    output_dimensionality=768
+                )
             )
             return [emb.values for emb in response.embeddings]
     async def detect_medical_intent(self, prompt: str) -> str:
@@ -59,18 +65,25 @@ class AIService:
         Hanya jawab dengan satu kata: 'medical' atau 'general'. Jangan berikan penjelasan.
         """
         
-        try:
-            client = self.get_client()
-            async with client.aio as async_client:
-                response = await async_client.models.generate_content(
-                    model=self.model_name,
-                    contents=intent_prompt
-                )
-                intent = response.text.strip().lower()
-                return 'medical' if 'medical' in intent else 'general'
-        except Exception as e:
-            logger.error(f"Intent detection failed: {e}")
-            return 'medical' # Fallback to medical for safety
+        for attempt in range(3):
+            try:
+                client = self.get_client()
+                async with client.aio as async_client:
+                    response = await async_client.models.generate_content(
+                        model=self.model_name,
+                        contents=intent_prompt
+                    )
+                    intent = response.text.strip().lower()
+                    return 'medical' if 'medical' in intent else 'general'
+            except Exception as e:
+                logger.error(f"Intent detection failed (Attempt {attempt+1}/3): {e}")
+                if "503" in str(e) or "quota" in str(e).lower():
+                    import asyncio
+                    await asyncio.sleep(2 ** attempt)  # Exponential backoff
+                    continue
+                break
+                
+        return 'medical' # Fallback to medical for safety
 
     async def stream_rag_answer(self, prompt: str, context: str) -> AsyncGenerator[str, None]:
         """Generate RAG-enabled answer dengan streaming menggunakan Gemini 2.5."""
@@ -179,7 +192,7 @@ Struktur jawabanmu sebagai berikut:
                     crypto_data["key_iv"]
                 )
             except Exception as e:
-                yield json.dumps({"type": "chunk", "chunk": f"Otentikasi kunci gagal: {str(e)}", "is_final": False})
+                yield {"type": "chunk", "content": f"Maaf, otentikasi kunci pribadi gagal: {str(e)}"}
                 return
 
         # Phase 0: Intent Detection (Optimize API Usage)

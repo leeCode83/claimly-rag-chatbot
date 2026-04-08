@@ -45,7 +45,7 @@ class KMSService:
         return json.loads(plaintext.decode())
 
     @staticmethod
-    def decrypt_private_key(encrypted_priv_key_b64: str, password: str, salt_b64: str, iv_b64: str) -> str:
+    def decrypt_private_key(encrypted_priv_key_b64: str, password: str, salt_b64: str, iv_b64: str) -> bytes:
         """
         Decrypt the user's private key using their password.
         Uses PBKDF2-SHA256 for KEK derivation and AES-256-GCM for decryption.
@@ -63,33 +63,45 @@ class KMSService:
             # data is ciphertext + tag
             plaintext = aesgcm.decrypt(iv, data, None)
             
-            return plaintext.decode()
+            # Return raw bytes (could be PEM or DER)
+            return plaintext
         except Exception as e:
             logger.error(f"Failed to decrypt private key: {str(e)}")
             raise Exception("Invalid password or corrupted key data")
 
     @staticmethod
-    def decrypt_medical_record(encrypted_blob: str, private_key_pem: str) -> str:
+    def decrypt_medical_record(encrypted_blob: any, private_key_data: bytes) -> str:
         """
         Decrypt medical record notes using P-256 ECIES.
         Logic: ECDH -> SHA256 KDF -> AES-256-GCM Decrypt
         """
         try:
-            data = json.loads(encrypted_blob)
+            # Handle if blob is already a dict or a JSON string
+            if isinstance(encrypted_blob, dict):
+                data = encrypted_blob
+            else:
+                data = json.loads(encrypted_blob)
+                
             epk_b64 = data.get("epk")
             iv_b64 = data.get("iv")
             ct_b64 = data.get("ct")
             tag_b64 = data.get("tag")
 
-            if not all([epk_b64, iv_b64, ct_b64, tag_b64]):
-                raise ValueError("Missing ECIES components in blob")
+            if not all([epk_b64, iv_b64, ct_b64]):
+                raise ValueError(f"Missing mandatory ECIES components (epk, iv, ct). Keys found: {list(data.keys())}")
 
             # 1. Load Keys
-            # Load User's Private Key (P-256)
-            private_key = serialization.load_pem_private_key(
-                private_key_pem.encode(),
-                password=None
-            )
+            # Load User's Private Key (P-256) (Detect PEM vs DER)
+            if private_key_data.startswith(b"-----"):
+                private_key = serialization.load_pem_private_key(
+                    private_key_data,
+                    password=None
+                )
+            else:
+                private_key = serialization.load_der_private_key(
+                    private_key_data,
+                    password=None
+                )
             
             # Load Ephemeral Public Key (SPKI format expected)
             ephemeral_public_bytes = base64.b64decode(epk_b64)
@@ -106,11 +118,17 @@ class KMSService:
             # 4. Decrypt (AES-256-GCM)
             iv = base64.b64decode(iv_b64)
             ct = base64.b64decode(ct_b64)
-            tag = base64.b64decode(tag_b64)
+            
+            # Node.js implementations often append the 16-byte tag to the ciphertext.
+            # If tag is separate, we append it for the Python AESGCM library.
+            full_ciphertext = ct
+            if tag_b64:
+                tag = base64.b64decode(tag_b64)
+                full_ciphertext = ct + tag
             
             aesgcm = AESGCM(aes_key)
             # AESGCM.decrypt expects ciphertext + tag as the data parameter
-            plaintext = aesgcm.decrypt(iv, ct + tag, None)
+            plaintext = aesgcm.decrypt(iv, full_ciphertext, None)
             
             return plaintext.decode()
             
