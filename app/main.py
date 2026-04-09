@@ -82,6 +82,11 @@ async def generic_exception_handler(request: Request, exc: Exception):
         content={"error": "Internal Server Error", "detail": str(exc)},
     )
 
+# Healthcheck endpoint for Docker
+@app.get("/health")
+async def health_check():
+    return {"status": "healthy"}
+
 # Import and include routers
 from app.routers import websocket
 app.include_router(websocket.router)

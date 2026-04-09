@@ -41,7 +41,7 @@ services:
     image: claimly_rag_chatbot:latest
     restart: always
     deploy:
-      replicas: 2
+      replicas: 4
     env_file:
       - .env.docker
     environment:
