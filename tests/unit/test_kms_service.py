@@ -66,3 +66,36 @@ class TestKMSService:
         
         result = kms.decrypt_medical_record(bad_blob, private_key_pem)
         assert "Error decrypting" in result
+
+    def test_generate_derived_key(self, kms):
+        password = "strong_password"
+        key, salt_b64 = kms.generate_derived_key(password)
+        
+        assert len(key) == 32
+        assert isinstance(salt_b64, str)
+        assert len(base64.b64decode(salt_b64)) == 16
+
+    def test_encrypt_decrypt_content_roundtrip(self, kms):
+        password = "session_password"
+        plaintext = "This is a sensitive medical note."
+        
+        key, _ = kms.generate_derived_key(password)
+        
+        # Encrypt
+        encrypted_b64 = kms.encrypt_content(plaintext, key)
+        assert isinstance(encrypted_b64, str)
+        assert encrypted_b64 != plaintext
+        
+        # Decrypt
+        decrypted = kms.decrypt_content(encrypted_b64, key)
+        assert decrypted == plaintext
+
+    def test_decrypt_content_with_wrong_key(self, kms):
+        key1, _ = kms.generate_derived_key("pass1")
+        key2, _ = kms.generate_derived_key("pass2")
+        plaintext = "secret"
+        
+        encrypted = kms.encrypt_content(plaintext, key1)
+        
+        with pytest.raises(Exception):
+            kms.decrypt_content(encrypted, key2)

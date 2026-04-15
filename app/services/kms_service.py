@@ -136,5 +136,38 @@ class KMSService:
             logger.error(f"Error decrypting medical record: {str(e)}")
             return f"Error decrypting: {str(e)}"
 
+    @staticmethod
+    def generate_derived_key(password: str) -> tuple[bytes, str]:
+        """
+        Generate a session-scoped 32-byte derived key for content caching.
+        Returns: (derived_key_bytes, salt_b64)
+        """
+        salt = os.urandom(16)
+        key = KMSService.derive_kek(password, salt)
+        return key, base64.b64encode(salt).decode()
+
+    @staticmethod
+    def encrypt_content(plaintext: str, derived_key: bytes) -> str:
+        """
+        Encrypt content using AES-256-GCM with the session derived key.
+        Returns: base64(nonce + ciphertext + tag)
+        """
+        aesgcm = AESGCM(derived_key)
+        nonce = os.urandom(12)
+        ciphertext = aesgcm.encrypt(nonce, plaintext.encode(), None)
+        return base64.b64encode(nonce + ciphertext).decode()
+
+    @staticmethod
+    def decrypt_content(encrypted_b64: str, derived_key: bytes) -> str:
+        """
+        Decrypt content using AES-256-GCM with the session derived key.
+        """
+        data = base64.b64decode(encrypted_b64)
+        nonce = data[:12]
+        ciphertext = data[12:]
+        aesgcm = AESGCM(derived_key)
+        plaintext = aesgcm.decrypt(nonce, ciphertext, None)
+        return plaintext.decode()
+
 # Singleton
 kms_service = KMSService()

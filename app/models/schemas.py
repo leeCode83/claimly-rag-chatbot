@@ -3,7 +3,7 @@ from uuid import UUID
 from datetime import date, datetime
 from typing import List, Optional
 
-# --- External API Mock Models ---
+# --- External API Response Models ---
 
 class DiagnosisInfo(BaseModel):
     icd10_code: str
@@ -18,6 +18,14 @@ class DoctorInfo(BaseModel):
     role: str
     full_name: str
 
+class InstitutionInfo(BaseModel):
+    id: UUID
+    name: str
+
+class ClaimInfo(BaseModel):
+    id: UUID
+    status: str
+
 class MedicalRecord(BaseModel):
     id: UUID
     patient_id: UUID
@@ -30,6 +38,8 @@ class MedicalRecord(BaseModel):
     diagnosis: DiagnosisInfo
     patient: PatientInfo
     attending_doctor: Optional[DoctorInfo] = None
+    institution: Optional[InstitutionInfo] = None
+    claims: Optional[List[ClaimInfo]] = None
     created_at: datetime
 
 class UserKeys(BaseModel):
@@ -58,5 +68,5 @@ class TaskPayload(BaseModel):
     correlation_id: str
     user_id: str
     prompt: str
-    kek: str  # Encrypted using APP_SECRET in KMSService before enqueue
+    password: Optional[str] = None
     accessToken: str

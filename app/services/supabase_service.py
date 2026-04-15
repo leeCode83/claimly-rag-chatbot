@@ -49,5 +49,13 @@ class SupabaseService:
             return
         supabase.table("session_vectors").insert(vectors_data).execute()
 
+    @staticmethod
+    async def delete_session_vectors(session_id: str):
+        """Clean up all cached vectors for a session when it ends."""
+        supabase.table("session_vectors") \
+            .delete() \
+            .eq("session_id", session_id) \
+            .execute()
+
 # Singleton
 supabase_service = SupabaseService()

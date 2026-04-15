@@ -32,9 +32,15 @@ def test_websocket_chat_flow_success(mock_redis, mock_arq_pool):
     client = TestClient(app)
     mock_rs = AsyncMock()
     mock_rs.get_kek.return_value = "mock_kek"
+    mock_rs.get_derived_key.return_value = None # Simulate lazy init
+    
+    mock_kms = MagicMock()
+    mock_kms.generate_derived_key.return_value = (b"dummy_key_32_bytes_exactly_size!!", "dummy_salt")
     
     with patch('app.core.redis_pool.redis_pool_manager.get_pool', return_value=mock_arq_pool), \
-         patch('app.routers.websocket.redis_service', mock_rs):
+         patch('app.routers.websocket.redis_service', mock_rs), \
+         patch('app.routers.websocket.supabase_service', AsyncMock()), \
+         patch('app.routers.websocket.kms_service', mock_kms):
         with client.websocket_connect("/ws/chat") as websocket:
             # 1. Get Session ID
             init_data = websocket.receive_json()
@@ -88,8 +94,10 @@ def test_websocket_disconnect_cleanup(mock_redis, mock_arq_pool):
     client = TestClient(app)
     session_id = None
     mock_rs = AsyncMock()
+    mock_ss = AsyncMock()
     with patch('app.core.redis_pool.redis_pool_manager.get_pool', return_value=mock_arq_pool), \
-         patch('app.routers.websocket.redis_service', mock_rs):
+         patch('app.routers.websocket.redis_service', mock_rs), \
+         patch('app.routers.websocket.supabase_service', mock_ss):
         with client.websocket_connect("/ws/chat") as websocket:
             data = websocket.receive_json()
             session_id = data["session_id"]
@@ -99,3 +107,5 @@ def test_websocket_disconnect_cleanup(mock_redis, mock_arq_pool):
         # The finally block in the router should have run
         # Note: TestClient might need a small sleep or check if the registry is cleaned
         assert session_id not in app.state.active_queues
+        mock_rs.delete_derived_key.assert_called_once_with(session_id)
+        mock_ss.delete_session_vectors.assert_called_once_with(session_id)

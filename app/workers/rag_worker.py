@@ -60,6 +60,9 @@ async def process_medical_rag(ctx, encrypted_payload: str):
         # Save accumulated model response to history
         if full_response:
             await chat_history_service.add_message(session_id, "model", full_response)
+            print(f"[OK] AI response generated ({len(full_response)} chars) for session {session_id}")
+        else:
+            print(f"[WARN] AI returned empty response for session {session_id}")
 
         # 4. Finalize
         await redis_service.publish_chunk(session_id, correlation_id, "", is_final=True)

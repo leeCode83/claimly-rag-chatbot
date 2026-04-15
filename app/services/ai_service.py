@@ -4,6 +4,7 @@ from app.core.config import settings
 from typing import AsyncGenerator, List, Dict
 import logging
 import json
+import base64
 from app.services.kms_service import kms_service
 from app.services.supabase_service import supabase_service
 
@@ -239,25 +240,48 @@ Struktur jawabanmu sebagai berikut:
         password_required = False
         sample_diagnosis = None
         
+        # 0. Get/Generate Derived Key for cache encryption
+        from app.services.redis_service import redis_service
+        derived_key_data = await redis_service.get_derived_key(session_id)
+        dk = None
+        if derived_key_data:
+            dk = base64.b64decode(derived_key_data["key"])
+        elif password:
+            dk, salt_str = kms_service.generate_derived_key(password)
+            dk_b64 = base64.b64encode(dk).decode()
+            await redis_service.set_derived_key(session_id, dk_b64, salt_str)
+        
         # 1. First pass: Identify what's missing from cache
         for record in relevant_records:
             record_id_str = str(record.id)
             cached = await supabase_service.get_vector_by_record_id(user_id, record_id_str)
             
-            if cached:
-                record_contents[record_id_str] = cached["content"]
-            elif private_key:
+            if cached and dk:
                 try:
-                    plaintext = kms_service.decrypt_medical_record(record.notes_encrypted, private_key)
+                    plaintext = kms_service.decrypt_content(cached["content"], dk)
                     record_contents[record_id_str] = plaintext
-                    records_to_embed.append({"id": record_id_str, "content": plaintext})
                 except Exception as e:
-                    logger.error(f"Failed to decrypt record {record_id_str}: {e}")
-                    record_contents[record_id_str] = "[Gagal mendekripsi catatan]"
-            else:
-                password_required = True
-                sample_diagnosis = record.diagnosis.description
-                record_contents[record_id_str] = "[Catatan detail terenkripsi - Masukkan password untuk mengakses]"
+                    logger.error(f"Failed to decrypt cached content for {record_id_str}: {e}")
+                    # If decryption fails (e.g. wrong key), treat as cache miss
+                    cached = None
+
+            if not cached or not dk:
+                if private_key:
+                    if not record.notes_encrypted:
+                        logger.warning(f"Record {record_id_str} has no encrypted notes, skipping.")
+                        record_contents[record_id_str] = "[Tidak ada catatan detail untuk rekam medis ini]"
+                        continue
+                    try:
+                        plaintext = kms_service.decrypt_medical_record(record.notes_encrypted, private_key)
+                        record_contents[record_id_str] = plaintext
+                        records_to_embed.append({"id": record_id_str, "content": plaintext})
+                    except Exception as e:
+                        logger.error(f"Failed to decrypt record {record_id_str}: {e}")
+                        record_contents[record_id_str] = "[Gagal mendekripsi catatan]"
+                else:
+                    password_required = True
+                    sample_diagnosis = record.diagnosis.description
+                    record_contents[record_id_str] = "[Catatan detail terenkripsi - Masukkan password untuk mengakses]"
         
         # Signal frontend if password is required
         if password_required:
@@ -272,11 +296,13 @@ Struktur jawabanmu sebagai berikut:
                 # Prepare data for bulk insert
                 vectors_to_insert = []
                 for i, record_info in enumerate(records_to_embed):
+                    # Encrypt content before storing in Supabase if we have the derived key
+                    encrypted_val = kms_service.encrypt_content(record_info["content"], dk) if dk else record_info["content"]
                     vectors_to_insert.append({
                         "user_id": user_id,
                         "session_id": session_id,
                         "correlation_id": correlation_id,
-                        "content": record_info["content"],
+                        "content": encrypted_val,
                         "embedding": embeddings[i],
                         "record_id": record_info["id"]
                     })

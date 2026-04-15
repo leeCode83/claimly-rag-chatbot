@@ -7,6 +7,7 @@ from app.models.schemas import ChatRequest, ChatChunk
 from app.core.redis_pool import redis_pool_manager
 import uuid
 import json
+import base64
 import asyncio
 import logging
 
@@ -64,9 +65,16 @@ async def websocket_endpoint(websocket: WebSocket):
                         await websocket.close(code=1008)
                         return
 
-            # B. Key Management (KMS Hybrid)
-            kek = await redis_service.get_kek(session_id)
-            kek = data.get("kek")
+            # B. Key Management (Derived Key Lazy Init)
+            derived_key_data = await redis_service.get_derived_key(session_id)
+            if not derived_key_data and password:
+                try:
+                    dk, salt = kms_service.generate_derived_key(password)
+                    dk_b64 = base64.b64encode(dk).decode()
+                    await redis_service.set_derived_key(session_id, dk_b64, salt)
+                    logger.info(f"Derived key initialized for session: {session_id}")
+                except Exception as e:
+                    logger.error(f"Failed to generate derived key: {e}")
 
             if not prompt:
                 continue
@@ -77,7 +85,6 @@ async def websocket_endpoint(websocket: WebSocket):
                 "correlation_id": correlation_id,
                 "user_id": user_id,
                 "prompt": prompt,
-                "kek": kek, # Legacy/Session KEK
                 "password": password, # Raw password for identity KEK derivation
                 "accessToken": data.get("accessToken")
             }
@@ -124,8 +131,9 @@ async def websocket_endpoint(websocket: WebSocket):
         if session_id in websocket.app.state.active_queues:
             del websocket.app.state.active_queues[session_id]
         
-        # Cleanup KEK if it is a session-based KEK
-        await redis_service.delete_kek(session_id)
+        # Cleanup derived key and vector cache
+        await redis_service.delete_derived_key(session_id)
+        await supabase_service.delete_session_vectors(session_id)
 
         # Cleanup Chat History
         from app.services.chat_history_service import chat_history_service
