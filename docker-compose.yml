@@ -1,23 +1,10 @@
 services:
-  # Redis: In-memory cache and ARQ message broker
-  redis:
-    image: redis:7-alpine
-    container_name: claimly_redis
-    restart: always
-    ports:
-      - "6379:6379"
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
   # API: FastAPI Chatbot Application
   api:
     build:
       context: .
       dockerfile: Dockerfile
-    image: claimly_rag_chatbot:latest
+    image: claimly_rag_chatbot:1.0.0
     container_name: claimly_api
     restart: always
     ports:
@@ -25,10 +12,9 @@ services:
     env_file:
       - .env.docker
     environment:
-      - REDIS_URL=redis://redis:6379
-    depends_on:
-      redis:
-        condition: service_healthy
+      - REDIS_URL=redis://redis-stack:6379
+    networks:
+      - claimly_network
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
       interval: 30s
@@ -38,15 +24,18 @@ services:
 
   # Worker: ARQ Background Processor for RAG
   worker:
-    image: claimly_rag_chatbot:latest
+    image: claimly_rag_chatbot:1.0.0
     restart: always
     deploy:
       replicas: 4
     env_file:
       - .env.docker
     environment:
-      - REDIS_URL=redis://redis:6379
-    depends_on:
-      redis:
-        condition: service_healthy
+      - REDIS_URL=redis://redis-stack:6379
+    networks:
+      - claimly_network
     command: arq app.workers.rag_worker.WorkerSettings
+
+networks:
+  claimly_network:
+    external: true

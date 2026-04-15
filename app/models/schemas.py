@@ -24,12 +24,12 @@ class MedicalRecord(BaseModel):
     hospital_institution_id: UUID
     diagnosis_id: UUID
     diagnosis_date: date
-    diagnosis_date_encoded: int
-    attending_doctor_id: UUID
+    diagnosis_date_encoded: Optional[int] = None
+    attending_doctor_id: Optional[UUID] = None
     notes_encrypted: Optional[str] = None
     diagnosis: DiagnosisInfo
     patient: PatientInfo
-    attending_doctor: DoctorInfo
+    attending_doctor: Optional[DoctorInfo] = None
     created_at: datetime
 
 class UserKeys(BaseModel):

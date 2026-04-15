@@ -85,9 +85,9 @@ class AIService:
                 
         return 'medical' # Fallback to medical for safety
 
-    async def stream_rag_answer(self, prompt: str, context: str) -> AsyncGenerator[str, None]:
+    async def stream_rag_answer(self, prompt: str, context: str, history: List[Dict] = None) -> AsyncGenerator[str, None]:
         """Generate RAG-enabled answer dengan streaming menggunakan Gemini 2.5."""
-        full_message = f"""# IDENTITAS & PERAN
+        system_instruction = f"""# IDENTITAS & PERAN
 
 Kamu adalah **Dr. Claimly AI**, asisten kesehatan digital milik PT. Claimly yang dirancang untuk membantu pengguna memahami informasi kesehatan mereka secara personal dan akurat.
 
@@ -143,12 +143,6 @@ Jika pertanyaan berada di luar domain kesehatan (contoh: politik, teknologi, hib
 
 ---
 
-# PERTANYAAN USER
-
-{prompt}
-
----
-
 # FORMAT JAWABAN
 
 Struktur jawabanmu sebagai berikut:
@@ -162,17 +156,36 @@ Struktur jawabanmu sebagai berikut:
 **Gaya bahasa:** Profesional namun empatik. Gunakan Bahasa Indonesia yang baku dan mudah dipahami.
 """
         
+        # Build contents from history + current prompt
+        contents = []
+        if history:
+            for msg in history:
+                contents.append(types.Content(
+                    role=msg["role"],
+                    parts=[types.Part(text=msg["parts"][0]["text"])]
+                ))
+        
+        # Add current user prompt
+        contents.append(types.Content(
+            role="user",
+            parts=[types.Part(text=prompt)]
+        ))
+
+        
         # Menggunakan await pada pemanggilan stream lalu iterasi asinkron
         client = self.get_client()
         async with client.aio as async_client:
             async for chunk in await async_client.models.generate_content_stream(
                 model=self.model_name,
-                contents=full_message
+                contents=contents,
+                config=types.GenerateContentConfig(
+                    system_instruction=system_instruction
+                )
             ):
                 if chunk.text:
                     yield chunk.text
 
-    async def process_selective_rag(self, user_id: str, prompt: str, session_id: str, correlation_id: str, password: str, access_token: str) -> AsyncGenerator[str, None]:
+    async def process_selective_rag(self, user_id: str, prompt: str, session_id: str, correlation_id: str, password: str, access_token: str, history: List[Dict] = None) -> AsyncGenerator[str, None]:
         """
         Main Pipeline: Two-Phase Semantic RAG for Medical Records.
         Now uses Batch Embedding for efficiency.
@@ -216,7 +229,7 @@ Struktur jawabanmu sebagai berikut:
         
         if not relevant_records:
             context_to_send = error_context if error_context else "Tidak ada rekam medis yang relevan ditemukan."
-            async for chunk in self.stream_rag_answer(prompt, context_to_send):
+            async for chunk in self.stream_rag_answer(prompt, context_to_send, history):
                 yield {"type": "chunk", "content": chunk}
             return
 
@@ -282,7 +295,7 @@ Struktur jawabanmu sebagai berikut:
 
         # Final RAG with collected context
         combined_context = "\n\n".join(decrypted_contexts)
-        async for chunk in self.stream_rag_answer(prompt, combined_context):
+        async for chunk in self.stream_rag_answer(prompt, combined_context, history):
             yield {"type": "chunk", "content": chunk}
 
 # Singleton Instance Factory

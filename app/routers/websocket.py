@@ -126,3 +126,7 @@ async def websocket_endpoint(websocket: WebSocket):
         
         # Cleanup KEK if it is a session-based KEK
         await redis_service.delete_kek(session_id)
+
+        # Cleanup Chat History
+        from app.services.chat_history_service import chat_history_service
+        await chat_history_service.clear_history(session_id)

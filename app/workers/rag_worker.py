@@ -14,8 +14,8 @@ from arq.connections import RedisSettings
 from app.core.config import settings
 from app.services.kms_service import kms_service
 from app.services.ai_service import ai_service
-from app.services.supabase_service import supabase_service
 from app.services.redis_service import redis_service
+from app.services.chat_history_service import chat_history_service
 import json
 
 async def process_medical_rag(ctx, encrypted_payload: str):
@@ -39,17 +39,28 @@ async def process_medical_rag(ctx, encrypted_payload: str):
     print(f"Worker processing RAG for session {session_id}")
 
     try:
+        # Load existing history
+        history = await chat_history_service.get_history(session_id)
+        
+        # Save user prompt to history
+        await chat_history_service.add_message(session_id, "user", prompt)
+
         # 3. Execute Two-Phase RAG Pipeline
-        # Now yields dictionaries: {"type": "chunk", "content": "..."} or {"type": "password_required", ...}
-        async for result in ai_service.process_selective_rag(user_id, prompt, session_id, correlation_id, password, accessToken):
+        full_response = ""
+        async for result in ai_service.process_selective_rag(user_id, prompt, session_id, correlation_id, password, accessToken, history):
             msg_type = result.get("type", "chunk")
             
             if msg_type == "chunk":
-                await redis_service.publish_chunk(session_id, correlation_id, result["content"], msg_type="chunk")
+                content = result["content"]
+                full_response += content
+                await redis_service.publish_chunk(session_id, correlation_id, content, msg_type="chunk")
             elif msg_type == "password_required":
-                # For metadata types, we can pass the whole JSON-stringified dict or specific chunk
                 await redis_service.publish_chunk(session_id, correlation_id, json.dumps(result), msg_type="password_required")
         
+        # Save accumulated model response to history
+        if full_response:
+            await chat_history_service.add_message(session_id, "model", full_response)
+
         # 4. Finalize
         await redis_service.publish_chunk(session_id, correlation_id, "", is_final=True)
         print(f"RAG Task complete for session {session_id}")
