@@ -1,5 +1,6 @@
 from typing import List
 import logging
+import time
 from app.models.schemas import MedicalRecord
 from app.services.ai_service import ai_service
 from app.core.config import settings
@@ -18,6 +19,9 @@ class MedicalRecordService:
             logger.warning("Access token missing.")
             raise Exception("Maaf, sesi Anda tidak valid atau token hilang. Silakan login kembali.")
 
+        t0 = time.perf_counter()
+        logger.info(f"[RAG:MEDICAL-API] Calling {settings.MEDICAL_API_URL} for user {user_id}")
+
         try:
             client = get_http_client()
             headers = {"Authorization": f"Bearer {access_token}"}
@@ -31,12 +35,17 @@ class MedicalRecordService:
                 data = response.json()
                 # Parse 'data' array from the response
                 records_raw = data.get("data", [])
-                return [MedicalRecord(**r) for r in records_raw]
+                records = [MedicalRecord(**r) for r in records_raw]
+                elapsed = (time.perf_counter() - t0) * 1000
+                logger.info(f"[RAG:MEDICAL-API] Received {len(records)} records in {elapsed:.0f}ms")
+                return records
             else:
-                logger.error(f"Medical API Error {response.status_code}: {response.text}")
+                elapsed = (time.perf_counter() - t0) * 1000
+                logger.error(f"[RAG:MEDICAL-API] Error {response.status_code} after {elapsed:.0f}ms: {response.text}")
                 raise Exception("Maaf, kami tidak dapat mengakses data medis Anda saat ini. Pastikan akun Anda sudah terdaftar dengan benar.")
         except Exception as e:
-            logger.error(f"Connection to Medical API failed: {str(e)}")
+            elapsed = (time.perf_counter() - t0) * 1000
+            logger.error(f"[RAG:MEDICAL-API] Connection failed after {elapsed:.0f}ms: {str(e)}")
             raise Exception("Server medis sedang sibuk atau tidak merespons. Mohon coba lagi beberapa saat lagi.")
 
     async def rank_relevant_records(self, prompt: str, records: List[MedicalRecord], limit: int = 5) -> List[MedicalRecord]:
@@ -46,6 +55,9 @@ class MedicalRecordService:
         """
         if not records:
             return []
+
+        logger.info(f"[RAG:RANKING] Ranking {len(records)} records for prompt relevance")
+        t0 = time.perf_counter()
 
         # Prepare metadata representation for LLM
         metadata_summary = []
@@ -91,9 +103,13 @@ class MedicalRecordService:
                 relevant_ids = [relevant_ids]
             
             # Filter records based on selected IDs
-            return [r for r in records if str(r.id) in relevant_ids][:limit]
+            result = [r for r in records if str(r.id) in relevant_ids][:limit]
+            elapsed = (time.perf_counter() - t0) * 1000
+            logger.info(f"[RAG:RANKING] Selected {len(result)} relevant records in {elapsed:.0f}ms")
+            return result
         except Exception as e:
-            print(f"Error in ranking records: {e}")
+            elapsed = (time.perf_counter() - t0) * 1000
+            logger.error(f"[RAG:RANKING] Ranking failed after {elapsed:.0f}ms: {e}")
             # Fallback: Kembalikan beberapa yang terbaru jika LLM gagal
             return sorted(records, key=lambda x: x.diagnosis_date, reverse=True)[:limit]
 

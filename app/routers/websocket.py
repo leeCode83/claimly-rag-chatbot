@@ -131,9 +131,8 @@ async def websocket_endpoint(websocket: WebSocket):
         if session_id in websocket.app.state.active_queues:
             del websocket.app.state.active_queues[session_id]
         
-        # Cleanup derived key and vector cache
+        # Cleanup derived key dari Redis (kunci sesi saja — vektor tetap permanen di Supabase)
         await redis_service.delete_derived_key(session_id)
-        await supabase_service.delete_session_vectors(session_id)
 
         # Cleanup Chat History
         from app.services.chat_history_service import chat_history_service

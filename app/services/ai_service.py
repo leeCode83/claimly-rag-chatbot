@@ -5,6 +5,8 @@ from typing import AsyncGenerator, List, Dict
 import logging
 import json
 import base64
+import time
+import asyncio
 from app.services.kms_service import kms_service
 from app.services.supabase_service import supabase_service
 
@@ -12,8 +14,10 @@ logger = logging.getLogger("uvicorn.error")
 
 class AIService:
     def __init__(self):
-        # Menggunakan model gemini-1.5-flash untuk stabilitas produksi
-        self.model_name = 'gemini-2.5-flash' 
+        # Model utama untuk ranking records dan generasi jawaban RAG
+        self.model_name = 'gemini-2.5-flash'
+        # Model ringan untuk intent detection (15 RPM, 500 RPD) — hemat kuota
+        self.intent_model = "gemini-2.5-flash-lite"
         self.embed_model = "gemini-embedding-001"
 
     def get_client(self):
@@ -50,9 +54,11 @@ class AIService:
                 )
             )
             return [emb.values for emb in response.embeddings]
+
     async def detect_medical_intent(self, prompt: str) -> str:
         """
         Determines if the prompt requires internal medical record access or is a general query.
+        Uses gemini-2.1-flash-lite (15 RPM, 500 RPD) to preserve gemini-2.5-flash quota.
         Returns: 'medical' or 'general'.
         """
         intent_prompt = f"""
@@ -71,7 +77,7 @@ class AIService:
                 client = self.get_client()
                 async with client.aio as async_client:
                     response = await async_client.models.generate_content(
-                        model=self.model_name,
+                        model=self.intent_model,
                         contents=intent_prompt
                     )
                     intent = response.text.strip().lower()
@@ -79,7 +85,6 @@ class AIService:
             except Exception as e:
                 logger.error(f"Intent detection failed (Attempt {attempt+1}/3): {e}")
                 if "503" in str(e) or "quota" in str(e).lower():
-                    import asyncio
                     await asyncio.sleep(2 ** attempt)  # Exponential backoff
                     continue
                 break
@@ -144,6 +149,14 @@ Jika pertanyaan berada di luar domain kesehatan (contoh: politik, teknologi, hib
 
 ---
 
+# ATURAN PANJANG JAWABAN
+
+Sesuaikan panjang jawabanmu dengan kompleksitas pertanyaan:
+- **Pertanyaan Ya/Tidak** (contoh: "Apakah saya punya riwayat diabetes?", "Apakah flu itu menular?"): Jawab dengan **"Ya"** atau **"Tidak"**, diikuti maksimal **1 kalimat** penjelasan singkat. Jangan panjangkan.
+- **Pertanyaan kompleks** (contoh: "Jelaskan hasil lab saya", "Apa yang harus saya lakukan?"): Gunakan format lengkap sesuai bagian FORMAT JAWABAN di bawah.
+
+---
+
 # FORMAT JAWABAN
 
 Struktur jawabanmu sebagai berikut:
@@ -172,7 +185,6 @@ Struktur jawabanmu sebagai berikut:
             parts=[types.Part(text=prompt)]
         ))
 
-        
         # Menggunakan await pada pemanggilan stream lalu iterasi asinkron
         client = self.get_client()
         async with client.aio as async_client:
@@ -183,145 +195,124 @@ Struktur jawabanmu sebagai berikut:
                     system_instruction=system_instruction
                 )
             ):
-                if chunk.text:
-                    yield chunk.text
+                             yield chunk.text
 
     async def process_selective_rag(self, user_id: str, prompt: str, session_id: str, correlation_id: str, password: str, access_token: str, history: List[Dict] = None) -> AsyncGenerator[str, None]:
         """
-        Main Pipeline: Two-Phase Semantic RAG for Medical Records.
-        Now uses Batch Embedding for efficiency.
+        Main Pipeline: Optimized Two-Phase semantic RAG.
+        1. Intent Detection
+        2. DB-First Vector Search
+        3. Lazy API Fetch (once per session)
+        4. Structured context generation
         """
         from app.services.medical_record_service import medical_record_service
         from app.services.identity_service import identity_service
-        
-        # 0. Fetch and Decrypt User Private Key
-        private_key = None
-        if password and password.strip():
-            try:
-                crypto_data = await identity_service.get_user_crypto_data(access_token)
-                private_key = kms_service.decrypt_private_key(
-                    crypto_data["encrypted_priv_key"], 
-                    password,
-                    crypto_data["key_derivation_salt"],
-                    crypto_data["key_iv"]
-                )
-            except Exception as e:
-                yield {"type": "chunk", "content": f"Maaf, otentikasi kunci pribadi gagal: {str(e)}"}
-                return
+        from app.services.redis_service import redis_service
 
-        # Phase 0: Intent Detection (Optimize API Usage)
+        # PHASE 0: Intent Detection
+        t_intent = time.perf_counter()
         intent = await self.detect_medical_intent(prompt)
-        all_records = []
-        error_context = ""
+        elapsed_intent = (time.perf_counter() - t_intent) * 1000
+        logger.info(f"[RAG:INTENT] Detected intent='{intent}' in {elapsed_intent:.0f}ms")
 
-        if intent == "medical":
-            try:
-                all_records = await medical_record_service.fetch_patient_records(user_id, access_token)
-                if not all_records:
-                    error_context = "User ini belum memiliki rekam medis digital. Beritahu mereka untuk mendaftar jika perlu."
-            except Exception as e:
-                logger.error(f"Failed to fetch medical records for RAG: {e}")
-                error_context = "Sistem saat ini sedang kesulitan mengakses data medis Anda. Mohon maaf atas kendala teknis ini."
-        
-        # Phase 1: Fetch and Rank Metadata (Fast & Low Cost)
-        relevant_records = []
-        if all_records:
-            relevant_records = await medical_record_service.rank_relevant_records(prompt, all_records, limit=5)
-        
-        if not relevant_records:
-            context_to_send = error_context if error_context else "Tidak ada rekam medis yang relevan ditemukan."
-            async for chunk in self.stream_rag_answer(prompt, context_to_send, history):
+        if intent != "medical":
+            logger.info(f"[RAG:STREAM] General query — skipping medical record lookup")
+            async for chunk in self.stream_rag_answer(prompt, "Sapa user dan jawab pertanyaan umum dengan ramah.", history):
                 yield {"type": "chunk", "content": chunk}
             return
 
-        # Phase 2: Targeted Decryption & Context Preparation (Batch Optimized)
-        records_to_embed = []
-        record_contents = {} # map record_id -> content (plaintext)
-        password_required = False
-        sample_diagnosis = None
-        
-        # 0. Get/Generate Derived Key for cache encryption
-        from app.services.redis_service import redis_service
-        derived_key_data = await redis_service.get_derived_key(session_id)
-        dk = None
-        if derived_key_data:
-            dk = base64.b64decode(derived_key_data["key"])
-        elif password:
-            dk, salt_str = kms_service.generate_derived_key(password)
-            dk_b64 = base64.b64encode(dk).decode()
-            await redis_service.set_derived_key(session_id, dk_b64, salt_str)
-        
-        # 1. First pass: Identify what's missing from cache
-        for record in relevant_records:
-            record_id_str = str(record.id)
-            cached = await supabase_service.get_vector_by_record_id(user_id, record_id_str)
-            
-            if cached and dk:
-                try:
-                    plaintext = kms_service.decrypt_content(cached["content"], dk)
-                    record_contents[record_id_str] = plaintext
-                except Exception as e:
-                    logger.error(f"Failed to decrypt cached content for {record_id_str}: {e}")
-                    # If decryption fails (e.g. wrong key), treat as cache miss
-                    cached = None
+        # PHASE 1: DB-First Vector Search
+        t_db = time.perf_counter()
+        query_embedding = await self.get_embedding(prompt)
+        db_matches = await supabase_service.match_records(user_id, query_embedding, threshold=0.7)
+        elapsed_db = (time.perf_counter() - t_db) * 1000
+        logger.info(f"[RAG:DB-SEARCH] Found {len(db_matches)} potential matches in Supabase ({elapsed_db:.0f}ms)")
 
-            if not cached or not dk:
-                if private_key:
-                    if not record.notes_encrypted:
-                        logger.warning(f"Record {record_id_str} has no encrypted notes, skipping.")
-                        record_contents[record_id_str] = "[Tidak ada catatan detail untuk rekam medis ini]"
-                        continue
-                    try:
-                        plaintext = kms_service.decrypt_medical_record(record.notes_encrypted, private_key)
-                        record_contents[record_id_str] = plaintext
-                        records_to_embed.append({"id": record_id_str, "content": plaintext})
-                    except Exception as e:
-                        logger.error(f"Failed to decrypt record {record_id_str}: {e}")
-                        record_contents[record_id_str] = "[Gagal mendekripsi catatan]"
-                else:
-                    password_required = True
-                    sample_diagnosis = record.diagnosis.description
-                    record_contents[record_id_str] = "[Catatan detail terenkripsi - Masukkan password untuk mengakses]"
+        # PHASE 2: Lazy API Fetch (If DB results are empty or low similarity)
+        is_api_fetched = await redis_service.is_api_fetched(session_id)
         
-        # Signal frontend if password is required
-        if password_required:
-            yield {"type": "password_required", "diagnosis": sample_diagnosis}
-            return # Abort further processing until password is provided
-
-        # 2. Second pass: Generate embeddings in batch if needed
-        if records_to_embed:
+        if not db_matches and not is_api_fetched:
+            logger.info(f"[RAG:LAZY-FETCH] No relevant data in DB and API not fetched yet. Calling Medical API...")
             try:
-                embeddings = await self.get_embeddings_batch([r["content"] for r in records_to_embed])
-                
-                # Prepare data for bulk insert
-                vectors_to_insert = []
-                for i, record_info in enumerate(records_to_embed):
-                    # Encrypt content before storing in Supabase if we have the derived key
-                    encrypted_val = kms_service.encrypt_content(record_info["content"], dk) if dk else record_info["content"]
-                    vectors_to_insert.append({
-                        "user_id": user_id,
-                        "session_id": session_id,
-                        "correlation_id": correlation_id,
-                        "content": encrypted_val,
-                        "embedding": embeddings[i],
-                        "record_id": record_info["id"]
-                    })
-                
-                await supabase_service.insert_vectors_batch(vectors_to_insert)
-                logger.info(f"Batched embedding and insertion for {len(records_to_embed)} records.")
+                fetched_records = await medical_record_service.fetch_patient_records(user_id, access_token)
+                await redis_service.set_api_fetched(session_id)
+
+                if fetched_records:
+                    # If we have password, we can decrypt and embed immediately to populate DB
+                    if password:
+                        # 2.1 Get Private Key
+                        crypto_data = await identity_service.get_user_crypto_data(access_token)
+                        private_key = kms_service.decrypt_private_key(
+                            crypto_data["encrypted_priv_key"], password,
+                            crypto_data["key_derivation_salt"], crypto_data["key_iv"]
+                        )
+                        
+                        # 2.2 Get/Generate Derived Key for DB encryption
+                        dk_data = await redis_service.get_derived_key(session_id)
+                        if dk_data:
+                            dk = base64.b64decode(dk_data["key"])
+                        else:
+                            dk, salt_str = kms_service.generate_derived_key(password)
+                            await redis_service.set_derived_key(session_id, base64.b64encode(dk).decode(), salt_str)
+
+                        # 2.3 Decrypt, Embed and Save all fetched records
+                        records_to_insert = []
+                        relevant_fetched = await medical_record_service.rank_relevant_records(prompt, fetched_records)
+                        
+                        if relevant_fetched:
+                            texts_to_embed = []
+                            for r in relevant_fetched:
+                                plaintext = kms_service.decrypt_medical_record(r.notes_encrypted, private_key)
+                                texts_to_embed.append(plaintext)
+                            
+                            embeddings = await self.get_embeddings_batch(texts_to_embed)
+                            for i, r in enumerate(relevant_fetched):
+                                encrypted_val = kms_service.encrypt_content(texts_to_embed[i], dk)
+                                records_to_insert.append({
+                                    "user_id": user_id, "session_id": session_id, "correlation_id": correlation_id,
+                                    "content": encrypted_val, "embedding": embeddings[i], "record_id": str(r.id)
+                                })
+                            
+                            await supabase_service.insert_vectors_batch(records_to_insert)
+                            # Re-run DB search to pick up new vectors
+                            db_matches = await supabase_service.match_records(user_id, query_embedding, threshold=0.7)
+                    else:
+                        sample_diag = fetched_records[0].diagnosis.description if fetched_records else "Data Medis"
+                        yield {"type": "password_required", "diagnosis": sample_diag}
+                        return
             except Exception as e:
-                logger.error(f"Batch embedding failed: {e}")
+                logger.error(f"[RAG:LAZY-FETCH] Failed: {e}")
 
-        # 3. Third pass: Construct final context
+        # PHASE 3: Decryption & Context Preparation
+        if not db_matches:
+            msg = "Maaf, saya tidak menemukan informasi medis yang relevan dengan pertanyaan Anda."
+            async for chunk in self.stream_rag_answer(prompt, msg, history):
+                yield {"type": "chunk", "content": chunk}
+            return
+
+        dk_data = await redis_service.get_derived_key(session_id)
+        if not dk_data:
+            yield {"type": "password_required", "diagnosis": "Detail Rekam Medis"}
+            return
+            
+        dk = base64.b64decode(dk_data["key"])
         decrypted_contexts = []
-        for record in relevant_records:
-            record_id_str = str(record.id)
-            plaintext = record_contents.get(record_id_str, "[Data tidak tersedia]")
-            decrypted_contexts.append(f"Diagnosa: {record.diagnosis.description} ({record.diagnosis_date})\nCatatan: {plaintext}")
+        for match in db_matches:
+            try:
+                plaintext = kms_service.decrypt_content(match["content"], dk)
+                decrypted_contexts.append(f"Informasi Terkait: {plaintext}")
+            except Exception as e:
+                logger.error(f"[RAG:DECRYPT] Failed to decrypt match: {e}")
+                continue
 
-        # Final RAG with collected context
-        combined_context = "\n\n".join(decrypted_contexts)
-        async for chunk in self.stream_rag_answer(prompt, combined_context, history):
+        if not decrypted_contexts:
+            async for chunk in self.stream_rag_answer(prompt, "Data medis ditemukan namun tidak dapat dibuka. Silakan masukkan password kembali.", history):
+                yield {"type": "chunk", "content": chunk}
+            return
+
+        final_context = "\n\n".join(decrypted_contexts)
+        logger.info(f"[RAG:STREAM] Generating final answer with {len(decrypted_contexts)} record(s)")
+        async for chunk in self.stream_rag_answer(prompt, final_context, history):
             yield {"type": "chunk", "content": chunk}
 
 # Singleton Instance Factory

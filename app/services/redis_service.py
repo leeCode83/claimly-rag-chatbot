@@ -39,6 +39,15 @@ class RedisService:
         """Force delete derived key on disconnect."""
         await self.redis_client.delete(f"derived_key:{session_id}")
 
+    async def set_api_fetched(self, session_id: str, fetched: bool = True, ttl: int = 3600):
+        """Mark that medical records have been fetched from API for this session."""
+        await self.redis_client.set(f"api_fetched:{session_id}", "true" if fetched else "false", ex=ttl)
+
+    async def is_api_fetched(self, session_id: str) -> bool:
+        """Check if medical records have been fetched from API for this session."""
+        val = await self.redis_client.get(f"api_fetched:{session_id}")
+        return val == "true"
+
     async def publish_chunk(self, session_id: str, correlation_id: str, chunk: str, msg_type: str = "chunk", is_final: bool = False):
         """Broadcast a streaming chunk back to the WebSocket via Pub/Sub."""
         channel = f"chat:{session_id}"
